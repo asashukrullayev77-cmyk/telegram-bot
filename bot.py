@@ -3,7 +3,7 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = os.environ.get("8802164056:AAH5xRp6OQGPDDKBPrqrK6xiQuyUBLVH5cQ")
+TOKEN = os.environ.get "8802164056:AAH5xRp6OQGPDDKBPrqrK6xiQuyUBLVH5cQ"
 
 # ─────────────────────────────────────────
 # /start komandasi
