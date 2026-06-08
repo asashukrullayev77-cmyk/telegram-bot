@@ -1,29 +1,23 @@
 import os
+import asyncio
+import time
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = "8802164056:AAH5xRp6OQGPDDKBPrqrK6xiQuyUBLVH5cQ"
+TOKEN = os.environ.get("BOT_TOKEN", "8802164056:AAH5xRp6OQGPDDKBPrqrK6x1QuyUBLVH5cQ")
 
 # ─────────────────────────────────────────
-# /start komandasi
+# /start
 # ─────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    first_name = user.first_name or "Do'st"
-
+    name = user.first_name or "Do'st"
     await update.message.reply_text(
-        f"👋 Salom, {first_name}!\n\n"
-        "🎉 Asadbekning botiga xush kelibsiz!\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "📌 Nima qila olaman:\n\n"
-        "🎵 *Musiqa* — qo'shiq yoki qo'shiqchi ismini yozing\n"
-        "   Masalan: `Shaxriyor Umarov` yoki `Closer`\n\n"
-        "📥 *Video* — Instagram/YouTube havolasini yozing\n"
-        "   Masalan: `https://youtube.com/...`\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "⬇️ Boshlash uchun yuboring!",
-        parse_mode="Markdown"
+        f"Salom, {name}! 👋\n\n"
+        f"🎉 Asadbekning botiga xush kelibsiz!\n\n"
+        "🎵 Musiqa — qo'shiq yoki qo'shiqchi ismini yozing\n"
+        "📥 Video — YouTube/Instagram/TikTok havolasini yozing\n"
     )
 
 # ─────────────────────────────────────────
@@ -33,146 +27,193 @@ def is_url(text):
     return text.startswith("http://") or text.startswith("https://")
 
 # ─────────────────────────────────────────
-# Video yuklab olish (havola orqali)
+# Musiqa qidirish — katalog
 # ─────────────────────────────────────────
-async def download_video(update: Update, url: str):
-    msg = await update.message.reply_text("⏳ Video yuklanmoqda, iltimos kuting...")
+async def search_music(update: Update, query: str):
+    msg = await update.message.reply_text("🔍 Qidirilmoqda...")
     try:
-        os.makedirs("downloads", exist_ok=True)
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best',
-            'outtmpl': 'downloads/%(title)s.%(ext)s',
-            'quiet': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-
-        await msg.edit_text("📤 Yuborilmoqda...")
-        with open(filename, 'rb') as video:
-            await update.message.reply_video(
-                video,
-                caption=f"✅ *{info.get('title', 'Video')}*\n\n🤖 @{(await update.get_bot()).username}",
-                parse_mode="Markdown"
-            )
-        os.remove(filename)
-        await msg.delete()
-
-    except Exception as e:
-        await msg.edit_text(f"❌ Xato yuz berdi:\n`{e}`", parse_mode="Markdown")
-
-# ─────────────────────────────────────────
-# Qo'shiqchi qidirish — katalog chiqarish
-# ─────────────────────────────────────────
-async def search_artist_catalog(update: Update, query: str):
-    msg = await update.message.reply_text(f"🔍 *{query}* bo'yicha qidirilmoqda...", parse_mode="Markdown")
-    try:
-        os.makedirs("downloads", exist_ok=True)
-
         ydl_opts = {
             'quiet': True,
+            'no_warnings': True,
             'extract_flat': 'in_playlist',
             'skip_download': True,
-            'noplaylist': False,
+            'socket_timeout': 15,
         }
 
-        search_query = f"ytsearch10:{query}"
-
+        loop = asyncio.get_running_loop()  # ✅ To'g'ri usul
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(search_query, download=False)
+            info = await loop.run_in_executor(
+                None, lambda: ydl.extract_info(f"ytsearch5:{query}", download=False)
+            )
 
         entries = info.get('entries', [])
         if not entries:
-            await msg.edit_text("❌ Hech narsa topilmadi.")
+            await msg.edit_text("❌ Hech narsa topilmadi!")
             return
 
-        # Katalog tugmalari
         keyboard = []
-        for i, entry in enumerate(entries[:10]):
-            title = entry.get('title') or f'Track {i+1}'
-            video_id = entry.get('id', '')
-            if video_id:
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"🎵 {title[:45]}",
-                        callback_data=f"dl_audio:{video_id}"
-                    )
-                ])
+        for entry in entries[:5]:
+            title = (entry.get('title') or 'Nomsiz')[:50]
+            duration = entry.get('duration') or 0
+            mins = int(duration) // 60
+            secs = int(duration) % 60
+            vid_id = entry.get('id', '')
+            if not vid_id:
+                continue
+            keyboard.append([InlineKeyboardButton(
+                f"🎵 {title} ({mins}:{secs:02d})",
+                callback_data=f"dl_{vid_id}"
+            )])
 
         if not keyboard:
-            await msg.edit_text("❌ Natijalar topilmadi.")
+            await msg.edit_text("❌ Natijalar topilmadi!")
             return
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await msg.edit_text(
-            f"🎤 *{query}* — qo'shiqlar ro'yxati:\n\n"
-            "Qaysi birini yuklab olmoqchisiz?",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
+            f"🎵 *{query}* bo'yicha natijalar:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
         )
 
     except Exception as e:
-        await msg.edit_text(f"❌ Xato: `{e}`", parse_mode="Markdown")
+        await msg.edit_text(f"❌ Xato: {e}")
 
 # ─────────────────────────────────────────
-# Katalogdan tanlangan qo'shiqni yuklash
+# Progress hook — rate limit xatosini oldini olish
 # ─────────────────────────────────────────
-async def handle_catalog_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def make_progress_hook(msg, loop):
+    state = {'last_update': 0, 'last_percent': ''}
+
+    def hook(d):
+        if d['status'] == 'downloading':
+            percent = d.get('_percent_str', '').strip()
+            speed = d.get('_speed_str', '').strip()
+            now = time.time()
+            # ✅ Har 3 sekundda bir marta yangilash (rate limit oldini olish)
+            if percent and percent != state['last_percent'] and now - state['last_update'] > 3:
+                state['last_percent'] = percent
+                state['last_update'] = now
+                asyncio.run_coroutine_threadsafe(
+                    msg.edit_text(f"⏳ Yuklanmoqda... {percent}\n⚡ Tezlik: {speed}"),
+                    loop
+                )
+    return hook
+
+# ─────────────────────────────────────────
+# Callback — tugmadan qo'shiq yuklash
+# ─────────────────────────────────────────
+async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data
-    if not data.startswith("dl_audio:"):
-        return
-
-    video_id = data.split("dl_audio:")[1]
+    video_id = query.data.replace("dl_", "", 1)
     url = f"https://www.youtube.com/watch?v={video_id}"
 
-    await query.message.edit_text("⏳ Qo'shiq yuklanmoqda...")
+    msg = await query.edit_message_text("⏳ Yuklanmoqda... 0%")
+    loop = asyncio.get_running_loop()  # ✅
+
     try:
         os.makedirs("downloads", exist_ok=True)
         ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl': 'downloads/%(id)s.%(ext)s',
             'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'concurrent_fragment_downloads': 4,
+            'progress_hooks': [make_progress_hook(msg, loop)],
         }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
 
-        await query.message.edit_text("📤 Yuborilmoqda...")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = await loop.run_in_executor(
+                None, lambda: ydl.extract_info(url, download=True)
+            )
+            # ✅ Haqiqiy fayl nomini topish
+            filename = ydl.prepare_filename(info)
+            if not os.path.exists(filename):
+                # Kengaytma farq qilishi mumkin, qidirish
+                base = os.path.splitext(filename)[0]
+                for f in os.listdir("downloads"):
+                    if f.startswith(video_id):
+                        filename = os.path.join("downloads", f)
+                        break
+
+        await msg.delete()
         with open(filename, 'rb') as audio:
             await query.message.reply_audio(
                 audio,
-                title=info.get('title', 'Audio'),
-                caption=f"🎵 *{info.get('title', 'Audio')}*\n\n🤖 @{(await query.get_bot()).username}",
-                parse_mode="Markdown"
+                title=info.get('title', "Qo'shiq"),
+                performer=info.get('uploader', ''),
             )
         os.remove(filename)
-        await query.message.delete()
 
     except Exception as e:
-        await query.message.edit_text(f"❌ Xato: `{e}`", parse_mode="Markdown")
+        await msg.edit_text(f"❌ Xato: {e}")
 
 # ─────────────────────────────────────────
-# Oddiy matn — musiqa qidirish yoki URL
+# Video yuklash (URL orqali)
+# ─────────────────────────────────────────
+async def download_video(update: Update, url: str):
+    msg = await update.message.reply_text("⏳ Yuklanmoqda... 0%")
+    loop = asyncio.get_running_loop()  # ✅
+
+    try:
+        os.makedirs("downloads", exist_ok=True)
+        ydl_opts = {
+            'format': 'best[ext=mp4][filesize<50M]/best[filesize<50M]/best',
+            'outtmpl': 'downloads/%(id)s.%(ext)s',
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'concurrent_fragment_downloads': 4,
+            'progress_hooks': [make_progress_hook(msg, loop)],
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+                'Accept-Language': 'en-US,en;q=0.5',
+            },
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = await loop.run_in_executor(
+                None, lambda: ydl.extract_info(url, download=True)
+            )
+            filename = ydl.prepare_filename(info)
+            # ✅ Fayl mavjudligini tekshirish
+            if not os.path.exists(filename):
+                vid_id = info.get('id', '')
+                for f in os.listdir("downloads"):
+                    if f.startswith(vid_id):
+                        filename = os.path.join("downloads", f)
+                        break
+
+        await msg.delete()
+        with open(filename, 'rb') as video:
+            await update.message.reply_video(
+                video,
+                caption=f"✅ {info.get('title', 'Video')}"
+            )
+        os.remove(filename)
+
+    except Exception as e:
+        await msg.edit_text(f"❌ Xato: {e}")
+
+# ─────────────────────────────────────────
+# Xabar handler
 # ─────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-
     if is_url(text):
         await download_video(update, text)
     else:
-        await search_artist_catalog(update, text)
+        await search_music(update, text)
 
 # ─────────────────────────────────────────
-# Bot ishga tushirish
+# Botni ishga tushirish
 # ─────────────────────────────────────────
 app = ApplicationBuilder().token(TOKEN).build()
-
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(handle_catalog_choice, pattern="^dl_audio:"))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_handler(CallbackQueryHandler(download_callback, pattern="^dl_"))
 
-print("✅ Bot ishlamoqda...")
-app.run_polling()
+print("Bot ishlamoqda... ✅")
+app.run_polling(poll_interval=0.5)
