@@ -3,7 +3,7 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = os.environ.get"8802164056:AAExGebMcdZZ0Uwa9BdjBcBWfZwfGLHlLd4"
+TOKEN = os.environ.get("8802164056:AAH5xRp6OQGPDDKBPrqrK6xiQuyUBLVH5cQ")
 
 # ─────────────────────────────────────────
 # /start komandasi
@@ -71,13 +71,15 @@ async def search_artist_catalog(update: Update, query: str):
 
         ydl_opts = {
             'quiet': True,
-            'extract_flat': True,
-            'default_search': f'ytsearch10:{query}',
+            'extract_flat': 'in_playlist',
+            'skip_download': True,
             'noplaylist': False,
         }
 
+        search_query = f"ytsearch10:{query}"
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False)
+            info = ydl.extract_info(search_query, download=False)
 
         entries = info.get('entries', [])
         if not entries:
@@ -87,7 +89,7 @@ async def search_artist_catalog(update: Update, query: str):
         # Katalog tugmalari
         keyboard = []
         for i, entry in enumerate(entries[:10]):
-            title = entry.get('title', f'Track {i+1}')
+            title = entry.get('title') or f'Track {i+1}'
             video_id = entry.get('id', '')
             if video_id:
                 keyboard.append([
@@ -96,6 +98,10 @@ async def search_artist_catalog(update: Update, query: str):
                         callback_data=f"dl_audio:{video_id}"
                     )
                 ])
+
+        if not keyboard:
+            await msg.edit_text("❌ Natijalar topilmadi.")
+            return
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await msg.edit_text(
