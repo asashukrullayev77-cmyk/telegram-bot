@@ -1,23 +1,8 @@
-"""
-Music Bot — To'liq, mukammal versiya
-Barcha kamchiliklar tuzatilgan:
-  ✅ /help komandasi
-  ✅ Navbat (queue) tizimi — bir vaqtda max 2 ta yuklash
-  ✅ /cancel — jarayonni bekor qilish
-  ✅ Admin xabardorlik tizimi
-  ✅ Platform aniqlash (YouTube/Instagram/TikTok/Twitter/VK)
-  ✅ Katta audio faylni bo'lib yuborish (50MB+)
-  ✅ shazamio yo'q bo'lsa ogohlantirish
-  ✅ yt-dlp avtomatik yangilash (kuniga bir marta)
-  ✅ Cookie muddati tekshiruvi
-  ✅ Xotira tozalash
-  ✅ Barcha xato holatlari qayta ishlangan
-"""
-
 import os
 import asyncio
 import time
 import logging
+import shutil
 import yt_dlp
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -35,11 +20,10 @@ TOKEN        = "8802164056:AAHUzN18Lr5a8S3lhKmuIJ4Ix0OP4X5_Jo4"
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "/root/cookies.txt")
 ADMIN_IDS    = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
 DOWNLOAD_DIR = "downloads"
-MAX_PARALLEL = 2          # Bir foydalanuvchi uchun max parallel yuklash
-MAX_FILE_MB  = 49         # Telegram limiti (aslida 50MB, bir oz xavfsiz chegara)
-SHAZAM_SEC   = 30         # Shazam uchun audio uzunligi (sekund)
+MAX_PARALLEL = 2
+MAX_FILE_MB  = 49
+SHAZAM_SEC   = 30
 
-# Logging
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.INFO,
@@ -50,26 +34,36 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Global thread pool
 _executor = ThreadPoolExecutor(max_workers=6)
-
-# Foydalanuvchi navbat holati: {user_id: active_count}
 _user_tasks: dict[int, int] = defaultdict(int)
-
-# yt-dlp oxirgi yangilanish vaqti
 _ytdlp_last_update: float = 0
 
 # ══════════════════════════════════════════════════════
-# YT-DLP AVTOMATIK YANGILASH
+# FFMPEG YO'LI — bir marta aniqlanadi
+# ══════════════════════════════════════════════════════
+
+def _find_ffmpeg() -> str:
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg",
+              "/opt/homebrew/bin/ffmpeg", "/snap/bin/ffmpeg"]:
+        if os.path.isfile(p):
+            return p
+    return "ffmpeg"
+
+FFMPEG = _find_ffmpeg()
+log.info(f"FFmpeg: {FFMPEG}")
+
+# ══════════════════════════════════════════════════════
+# YT-DLP YANGILASH
 # ══════════════════════════════════════════════════════
 
 async def maybe_update_ytdlp():
-    """Kuniga bir marta yt-dlp ni yangilaydi"""
     global _ytdlp_last_update
-    now = time.time()
-    if now - _ytdlp_last_update < 86400:
+    if time.time() - _ytdlp_last_update < 86400:
         return
-    _ytdlp_last_update = now
+    _ytdlp_last_update = time.time()
     try:
         proc = await asyncio.create_subprocess_exec(
             "pip", "install", "-q", "--upgrade", "yt-dlp",
@@ -77,19 +71,16 @@ async def maybe_update_ytdlp():
             stderr=asyncio.subprocess.DEVNULL,
         )
         await asyncio.wait_for(proc.wait(), timeout=120)
-        log.info("yt-dlp yangilandi ✅")
+        log.info("yt-dlp yangilandi")
     except Exception as e:
         log.warning(f"yt-dlp yangilanmadi: {e}")
 
 # ══════════════════════════════════════════════════════
-# YORDAMCHI FUNKSIYALAR
+# YORDAMCHILAR
 # ══════════════════════════════════════════════════════
 
 def get_cookies_opt() -> dict:
     if os.path.exists(COOKIES_FILE):
-        age = time.time() - os.path.getmtime(COOKIES_FILE)
-        if age > 7 * 86400:
-            log.warning("⚠️ Cookies fayli 7 kundan eski — yangilash kerak!")
         return {"cookiefile": COOKIES_FILE}
     return {}
 
@@ -98,21 +89,14 @@ def is_url(text: str) -> bool:
 
 def detect_platform(url: str) -> str:
     u = url.lower()
-    if "youtube.com" in u or "youtu.be" in u:
-        return "YouTube"
-    if "instagram.com" in u:
-        return "Instagram"
-    if "tiktok.com" in u:
-        return "TikTok"
-    if "twitter.com" in u or "x.com" in u:
-        return "Twitter/X"
-    if "vk.com" in u:
-        return "VK"
-    if "facebook.com" in u or "fb.watch" in u:
-        return "Facebook"
-    if "soundcloud.com" in u:
-        return "SoundCloud"
-    return "Noma'lum"
+    if "youtube.com" in u or "youtu.be" in u: return "YouTube"
+    if "instagram.com" in u:                   return "Instagram"
+    if "tiktok.com" in u:                      return "TikTok"
+    if "twitter.com" in u or "x.com" in u:     return "Twitter/X"
+    if "vk.com" in u:                          return "VK"
+    if "facebook.com" in u or "fb.watch" in u: return "Facebook"
+    if "soundcloud.com" in u:                  return "SoundCloud"
+    return "Video"
 
 def find_file(directory: str, prefix: str) -> str | None:
     try:
@@ -123,188 +107,157 @@ def find_file(directory: str, prefix: str) -> str | None:
         pass
     return None
 
-def human_size(n_bytes: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n_bytes < 1024:
-            return f"{n_bytes:.1f} {unit}"
-        n_bytes /= 1024
-    return f"{n_bytes:.1f} GB"
+def human_size(n: int) -> str:
+    for u in ("B", "KB", "MB", "GB"):
+        if n < 1024: return f"{n:.1f} {u}"
+        n /= 1024
+    return f"{n:.1f} GB"
 
 def make_progress_hook(msg, loop):
-    state = {"last_update": 0, "last_pct": ""}
+    state = {"t": 0, "p": ""}
     def hook(d):
         if d["status"] == "downloading":
             pct = d.get("_percent_str", "").strip()
             spd = d.get("_speed_str", "").strip() or "?"
             now = time.time()
-            if pct and pct != state["last_pct"] and now - state["last_update"] > 4:
-                state["last_pct"] = pct
-                state["last_update"] = now
+            if pct and pct != state["p"] and now - state["t"] > 4:
+                state["p"] = pct
+                state["t"] = now
                 asyncio.run_coroutine_threadsafe(
-                    msg.edit_text(f"⏳ Yuklanmoqda... {pct}\n⚡ Tezlik: {spd}"),
-                    loop,
+                    msg.edit_text(f"⏳ Yuklanmoqda... {pct}\n⚡ Tezlik: {spd}"), loop
                 )
     return hook
 
 async def run_in_executor(func):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_executor, func)
+    return await asyncio.get_running_loop().run_in_executor(_executor, func)
 
-def _cleanup_old_files():
+def cleanup_files():
     try:
         now = time.time()
         for f in os.listdir(DOWNLOAD_DIR):
             fp = os.path.join(DOWNLOAD_DIR, f)
             if os.path.isfile(fp) and now - os.path.getmtime(fp) > 7200:
-                try:
-                    os.remove(fp)
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                try: os.remove(fp)
+                except: pass
+    except: pass
 
-def _cleanup_bot_data(context: ContextTypes.DEFAULT_TYPE):
+def cleanup_bot_data(context):
     now = time.time()
-    to_del = []
-    for key, val in list(context.bot_data.items()):
-        if key.startswith("vinfo_") and isinstance(val, dict):
-            if now - val.get("saved_at", 0) > 3600:
-                vk = key.replace("vinfo_", "")
-                to_del += [f"vfile_{vk}", f"vinfo_{vk}"]
-    for k in to_del:
-        context.bot_data.pop(k, None)
+    for key in [k for k in context.bot_data if k.startswith("vinfo_")]:
+        if now - context.bot_data[key].get("saved_at", 0) > 3600:
+            vk = key[6:]
+            context.bot_data.pop(f"vfile_{vk}", None)
+            context.bot_data.pop(f"vinfo_{vk}", None)
 
-async def notify_admin(context: ContextTypes.DEFAULT_TYPE, text: str):
+async def notify_admin(context, text: str):
     for aid in ADMIN_IDS:
-        try:
-            await context.bot.send_message(aid, f"🔔 Admin xabar:\n{text}")
-        except Exception:
-            pass
+        try: await context.bot.send_message(aid, f"🔔 {text}")
+        except: pass
+
+async def safe_edit(msg, text: str):
+    try: await msg.edit_text(text)
+    except: pass
 
 # ══════════════════════════════════════════════════════
-# NAVBAT TIZIMI
+# NAVBAT
 # ══════════════════════════════════════════════════════
 
 class TaskLimitExceeded(Exception):
     pass
 
 class UserTask:
-    """Context manager: foydalanuvchi navbatini boshqaradi"""
-    def __init__(self, user_id: int):
-        self.user_id = user_id
-
+    def __init__(self, uid: int):
+        self.uid = uid
     def __enter__(self):
-        if _user_tasks[self.user_id] >= MAX_PARALLEL:
+        if _user_tasks[self.uid] >= MAX_PARALLEL:
             raise TaskLimitExceeded()
-        _user_tasks[self.user_id] += 1
+        _user_tasks[self.uid] += 1
         return self
-
     def __exit__(self, *_):
-        _user_tasks[self.user_id] = max(0, _user_tasks[self.user_id] - 1)
+        _user_tasks[self.uid] = max(0, _user_tasks[self.uid] - 1)
 
 # ══════════════════════════════════════════════════════
-# FFMPEG
+# FFMPEG FUNKSIYALARI
 # ══════════════════════════════════════════════════════
 
-async def _check_ffmpeg() -> bool:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-version",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        return proc.returncode == 0
-    except FileNotFoundError:
-        return False
-
-async def extract_audio_from_video(
-    video_path: str,
-    out_path: str,
-    duration: int | None = None,
-) -> bool:
-    cmd = ["ffmpeg", "-i", video_path]
+async def extract_audio(video_path: str, out_path: str, duration: int = None) -> bool:
+    """Videodan audio ajratib olish"""
+    cmd = [FFMPEG, "-i", video_path]
     if duration:
         cmd += ["-t", str(duration)]
-    cmd += [
-        "-vn",
-        "-acodec", "libmp3lame",
-        "-q:a", "2",
-        "-ar", "44100",
-        "-ac", "2",
-        "-y", out_path,
-    ]
+    cmd += ["-vn", "-acodec", "libmp3lame", "-q:a", "2",
+            "-ar", "44100", "-ac", "2", "-y", out_path]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.wait_for(proc.wait(), timeout=180)
-        return os.path.exists(out_path) and os.path.getsize(out_path) > 0
-    except (asyncio.TimeoutError, FileNotFoundError):
+        await asyncio.wait_for(proc.wait(), timeout=300)
+        return os.path.exists(out_path) and os.path.getsize(out_path) > 1024
+    except Exception as e:
+        log.error(f"extract_audio xato: {e}")
         return False
 
-async def split_audio_parts(audio_path: str, part_sec: int = 3600) -> list[str]:
-    """
-    Katta audio faylni qismlarga bo'lish.
-    Har bir qism max ~part_sec sekund (standart 1 soat).
-    """
-    parts = []
+async def split_and_send_audio(message, audio_path: str, title: str, performer: str, markup=None):
+    """50MB dan katta audioni bo'lib yuborish"""
+    fsize = os.path.getsize(audio_path)
+    if fsize <= MAX_FILE_MB * 1024 * 1024:
+        with open(audio_path, "rb") as f:
+            await message.reply_audio(f, title=title, performer=performer, reply_markup=markup)
+        try: os.remove(audio_path)
+        except: pass
+        return
+
+    await message.reply_text(f"⚠️ Audio katta ({human_size(fsize)}), qismlarga bo'lib yuborilmoqda...")
     base = audio_path.rsplit(".", 1)[0]
-    idx = 0
-    offset = 0
+    offset, idx = 0, 0
+    parts = []
+
     while True:
-        out = f"{base}_part{idx}.mp3"
-        cmd = [
-            "ffmpeg", "-i", audio_path,
-            "-ss", str(offset),
-            "-t", str(part_sec),
-            "-acodec", "copy",
-            "-y", out,
-        ]
+        part = f"{base}_part{idx}.mp3"
+        cmd = [FFMPEG, "-i", audio_path, "-ss", str(offset), "-t", "3600",
+               "-acodec", "copy", "-y", part]
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
         await proc.wait()
-        if not os.path.exists(out) or os.path.getsize(out) < 1024:
-            try:
-                os.remove(out)
-            except Exception:
-                pass
+        if not os.path.exists(part) or os.path.getsize(part) < 1024:
+            try: os.remove(part)
+            except: pass
             break
-        parts.append(out)
-        offset += part_sec
+        parts.append(part)
+        offset += 3600
         idx += 1
-        if idx > 20:  # xavfsizlik chegarasi
-            break
-    return parts
+        if idx > 20: break
+
+    for i, part in enumerate(parts, 1):
+        try:
+            with open(part, "rb") as f:
+                await message.reply_audio(
+                    f,
+                    title=f"{title} ({i}/{len(parts)})",
+                    performer=performer,
+                    reply_markup=markup if i == len(parts) else None,
+                )
+        except Exception as e:
+            await message.reply_text(f"❌ Qism {i} yuborilmadi: {e}")
+        finally:
+            try: os.remove(part)
+            except: pass
+        await asyncio.sleep(0.5)
+
+    try: os.remove(audio_path)
+    except: pass
 
 # ══════════════════════════════════════════════════════
 # SHAZAM
 # ══════════════════════════════════════════════════════
 
-_shazamio_available: bool | None = None
-
-def _check_shazamio() -> bool:
-    global _shazamio_available
-    if _shazamio_available is None:
-        try:
-            import shazamio  # noqa: F401
-            _shazamio_available = True
-        except ImportError:
-            _shazamio_available = False
-    return _shazamio_available
-
 async def recognize_song(audio_path: str) -> dict | None:
-    if not _check_shazamio():
-        return None
     try:
         from shazamio import Shazam
-        shazam = Shazam()
-        result = await shazam.recognize(audio_path)
+        result = await Shazam().recognize(audio_path)
         track = result.get("track")
         if not track:
             return None
@@ -314,115 +267,112 @@ async def recognize_song(audio_path: str) -> dict | None:
             "genre":  track.get("genres", {}).get("primary", ""),
             "cover":  track.get("images", {}).get("coverart", ""),
         }
+    except ImportError:
+        log.error("shazamio o'rnatilmagan! pip install shazamio")
+        return None
     except Exception as e:
-        log.warning(f"Shazam xato: {e}")
+        log.error(f"Shazam xato: {e}")
         return None
 
+async def send_shazam_result(msg, reply_to, result: dict):
+    text = f"🎵 *{result['title']}*\n👤 {result['artist']}\n"
+    if result.get("genre"):
+        text += f"🎸 {result['genre']}\n"
+    sq = f"{result['artist']} {result['title']}"
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬇️ Yuklab olish", callback_data=f"sdl_{sq[:50]}")
+    ]])
+    if result.get("cover"):
+        try:
+            await msg.delete()
+            await reply_to.reply_photo(result["cover"], caption=text,
+                                       parse_mode="Markdown", reply_markup=kb)
+            return
+        except: pass
+    await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+
 # ══════════════════════════════════════════════════════
-# /start
+# BUYRUQLAR
 # ══════════════════════════════════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Do'st"
-    shazam_status = "✅ O'rnatilgan" if _check_shazamio() else "❌ O'rnatilmagan (pip install shazamio)"
-    ffmpeg_ok = await _check_ffmpeg()
-    ffmpeg_status = "✅ O'rnatilgan" if ffmpeg_ok else "❌ O'rnatilmagan (apt install ffmpeg)"
-
     await update.message.reply_text(
         f"Salom, {name}! 👋\n\n"
         "🎶 *Music Bot* ga xush kelibsiz!\n\n"
         "📌 *Imkoniyatlar:*\n"
-        "🔍 Qo'shiq nomi → qidirish → yuklab olish\n"
-        "🔗 Havola yuboring → video yoki audio\n"
+        "🔍 Qo'shiq nomi yozing → qidirish → yuklab olish\n"
+        "🔗 Havola yuboring → video yuklanadi\n"
         "🎵 Video kelgach → *Faqat audio* tugmasi\n"
         "🎧 Video kelgach → *Qo'shiqni top* (Shazam)\n"
         "📤 Video/audio fayl yuboring → qo'shiq topiladi\n\n"
-        "⚙️ *Holat:*\n"
-        f"• Shazam: {shazam_status}\n"
-        f"• FFmpeg: {ffmpeg_status}\n\n"
-        "📋 /help — batafsil yordam",
+        "/help — batafsil\n"
+        "/status — bot holati",
         parse_mode="Markdown",
     )
-
-# ══════════════════════════════════════════════════════
-# /help
-# ══════════════════════════════════════════════════════
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *Yordam*\n\n"
         "*Qo'shiq qidirish:*\n"
-        "Qo'shiq nomini yozing → katalogdan tanlang → yuklanadi\n\n"
-        "*Havola orqali:*\n"
-        "YouTube / Instagram / TikTok / Twitter / VK / SoundCloud havolasini yuboring\n"
-        "• Faqat audio kerak bo'lsa: `havola audio` deb yozing\n\n"
+        "Qo'shiq yoki artist nomini yozing\n\n"
+        "*Havola orqali video:*\n"
+        "YouTube / Instagram / TikTok / Twitter havolasini yuboring\n"
+        "Faqat audio: `havola audio` deb yozing\n\n"
         "*Fayl yuborish:*\n"
-        "Video yoki audio fayl yuboring → Shazam orqali qo'shiq topiladi\n\n"
+        "Video yoki audio → Shazam orqali qo'shiq topiladi\n\n"
         "*Tugmalar:*\n"
-        "🎵 *Faqat audio* — videoni faqat mp3 sifatida oling\n"
-        "🔍 *Qo'shiqni top* — Shazam orqali qo'shiq nomini aniqlang\n"
-        "⬇️ *Yuklab olish* — topilgan qo'shiqni yuklab oling\n\n"
-        "*Buyruqlar:*\n"
-        "/start — botni qayta ishga tushirish\n"
-        "/help — shu yordam\n"
-        "/cancel — joriy yuklanishni bekor qilish\n"
-        "/status — bot holati\n\n"
-        "⚠️ *Cheklovlar:*\n"
-        f"• Bir vaqtda max {MAX_PARALLEL} ta yuklash\n"
-        f"• Max fayl hajmi: {MAX_FILE_MB}MB\n"
-        "• Telegram fayl: max 20MB",
+        "🎵 *Faqat audio* — videoni mp3 ga aylantiradi\n"
+        "🔍 *Qo'shiqni top* — Shazam orqali aniqlaydi\n"
+        "⬇️ *Yuklab olish* — topilgan qo'shiqni yuklab oladi\n\n"
+        "/cancel — yuklanishni bekor qilish\n"
+        "/status — bot holati",
         parse_mode="Markdown",
     )
-
-# ══════════════════════════════════════════════════════
-# /cancel
-# ══════════════════════════════════════════════════════
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if _user_tasks.get(uid, 0) > 0:
         _user_tasks[uid] = 0
-        await update.message.reply_text("🛑 Navbatdagi vazifalar bekor qilindi.")
+        await update.message.reply_text("🛑 Bekor qilindi.")
     else:
         await update.message.reply_text("ℹ️ Hozir faol yuklanish yo'q.")
 
-# ══════════════════════════════════════════════════════
-# /status
-# ══════════════════════════════════════════════════════
-
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ffmpeg_ok = await _check_ffmpeg()
-    shazam_ok = _check_shazamio()
+    # shazamio tekshirish
+    try:
+        import shazamio
+        shazam_st = f"✅ {shazamio.__version__}"
+    except ImportError:
+        shazam_st = "❌ O'rnatilmagan (pip install shazamio)"
 
-    # Faoliyat sonini hisoblash
-    active = sum(_user_tasks.values())
+    # ffmpeg tekshirish
+    ffmpeg_st = f"✅ {FFMPEG}" if os.path.isfile(FFMPEG) or shutil.which("ffmpeg") else "❌ Topilmadi"
 
-    # Downloads papkasi hajmi
-    total_size = 0
-    file_count = 0
+    # cookie
+    if os.path.exists(COOKIES_FILE):
+        age_h = (time.time() - os.path.getmtime(COOKIES_FILE)) / 3600
+        cookie_st = f"✅ Bor ({age_h:.0f} soat oldin)" + (" ⚠️ Eski!" if age_h > 168 else "")
+    else:
+        cookie_st = "❌ Yo'q"
+
+    # fayllar
+    total, count = 0, 0
     try:
         for f in os.listdir(DOWNLOAD_DIR):
             fp = os.path.join(DOWNLOAD_DIR, f)
             if os.path.isfile(fp):
-                total_size += os.path.getsize(fp)
-                file_count += 1
-    except Exception:
-        pass
-
-    cookie_info = "❌ Yo'q"
-    if os.path.exists(COOKIES_FILE):
-        age_h = (time.time() - os.path.getmtime(COOKIES_FILE)) / 3600
-        cookie_info = f"✅ Bor ({age_h:.0f} soat oldin yangilangan)"
-        if age_h > 168:
-            cookie_info += " ⚠️ Eski!"
+                total += os.path.getsize(fp)
+                count += 1
+    except: pass
 
     await update.message.reply_text(
         "📊 *Bot holati*\n\n"
-        f"• FFmpeg: {'✅' if ffmpeg_ok else '❌'}\n"
-        f"• Shazam: {'✅' if shazam_ok else '❌'}\n"
-        f"• Cookie: {cookie_info}\n"
-        f"• Faol yuklanishlar: {active}\n"
-        f"• Vaqtinchalik fayllar: {file_count} ta ({human_size(total_size)})\n",
+        f"• FFmpeg: {ffmpeg_st}\n"
+        f"• Shazam: {shazam_st}\n"
+        f"• Cookie: {cookie_st}\n"
+        f"• Faol yuklanishlar: {sum(_user_tasks.values())}\n"
+        f"• Vaqtinchalik fayllar: {count} ta ({human_size(total)})",
         parse_mode="Markdown",
     )
 
@@ -433,54 +383,46 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def search_music(update: Update, query: str):
     msg = await update.message.reply_text("🔍 Qidirilmoqda...")
     try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "extract_flat": False,
-            "socket_timeout": 20,
-            "noplaylist": True,
-            **get_cookies_opt(),
-        }
-
         def do_search():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL({
+                "quiet": True, "no_warnings": True,
+                "skip_download": True, "socket_timeout": 20,
+                "noplaylist": True, **get_cookies_opt(),
+            }) as ydl:
                 return ydl.extract_info(f"ytsearch5:{query}", download=False)
 
         info = await run_in_executor(do_search)
         entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
-
         if not entries:
-            await msg.edit_text("❌ Hech narsa topilmadi. Boshqa so'z bilan qidiring.")
+            await msg.edit_text("❌ Hech narsa topilmadi. Boshqacha yozing.")
             return
 
-        keyboard = []
+        kb = []
         for e in entries[:5]:
             title = (e.get("title") or "Nomsiz")[:45]
-            dur   = int(e.get("duration") or 0)
-            keyboard.append([InlineKeyboardButton(
+            dur = int(e.get("duration") or 0)
+            kb.append([InlineKeyboardButton(
                 f"🎵 {title}  {dur//60}:{dur%60:02d}",
-                callback_data=f"dl_{e['id']}",
+                callback_data=f"dl_{e['id']}"
             )])
-
         await msg.edit_text(
             f"🎵 *Natijalar:* {query}",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown",
         )
     except Exception as e:
-        log.error(f"search_music xato: {e}")
-        await msg.edit_text("❌ Qidirishda xato yuz berdi. Keyinroq urinib ko'ring.")
+        log.error(f"search_music: {e}")
+        await msg.edit_text("❌ Qidirishda xato. Qayta urinib ko'ring.")
 
 # ══════════════════════════════════════════════════════
-# KATALOGDAN QOSHIQ YUKLASH
+# KATALOGDAN AUDIO YUKLASH
 # ══════════════════════════════════════════════════════
 
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    video_id = q.data.replace("dl_", "", 1)
+    video_id = q.data[3:]  # "dl_" ni olib tashlash
     url = f"https://www.youtube.com/watch?v={video_id}"
 
     try:
@@ -490,19 +432,16 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.makedirs(DOWNLOAD_DIR, exist_ok=True)
             await maybe_update_ytdlp()
 
-            ydl_opts = {
-                "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-                "outtmpl": f"{DOWNLOAD_DIR}/{video_id}.%(ext)s",
-                "quiet": True,
-                "no_warnings": True,
-                "socket_timeout": 30,
-                "concurrent_fragment_downloads": 4,
-                "progress_hooks": [make_progress_hook(msg, loop)],
-                **get_cookies_opt(),
-            }
-
             def do_dl():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL({
+                    "format": "bestaudio[ext=m4a]/bestaudio/best",
+                    "outtmpl": f"{DOWNLOAD_DIR}/{video_id}.%(ext)s",
+                    "quiet": True, "no_warnings": True,
+                    "socket_timeout": 30,
+                    "concurrent_fragment_downloads": 4,
+                    "progress_hooks": [make_progress_hook(msg, loop)],
+                    **get_cookies_opt(),
+                }) as ydl:
                     return ydl.extract_info(url, download=True)
 
             info = await run_in_executor(do_dl)
@@ -513,11 +452,9 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             fsize = os.path.getsize(filename)
             if fsize > MAX_FILE_MB * 1024 * 1024:
-                await msg.edit_text(
-                    f"❌ Fayl juda katta ({human_size(fsize)}).\n"
-                    "Telegram 50MB dan katta fayllarni qabul qilmaydi."
-                )
-                os.remove(filename)
+                await msg.edit_text(f"❌ Fayl juda katta ({human_size(fsize)}).")
+                try: os.remove(filename)
+                except: pass
                 return
 
             await msg.delete()
@@ -527,89 +464,60 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     title=info.get("title", "Qo'shiq"),
                     performer=info.get("uploader", ""),
                 )
-            try:
-                os.remove(filename)
-            except Exception:
-                pass
+            try: os.remove(filename)
+            except: pass
 
     except TaskLimitExceeded:
-        await q.answer(
-            f"⏳ Siz allaqachon {MAX_PARALLEL} ta yuklash qilmoqdasiz. Biroz kuting.",
-            show_alert=True,
-        )
+        await q.answer(f"⏳ Max {MAX_PARALLEL} ta parallel yuklash. Kuting.", show_alert=True)
     except Exception as e:
-        log.error(f"download_callback xato: {e}")
-        try:
-            await msg.edit_text(f"❌ Xato: {str(e)[:200]}")
-        except Exception:
-            pass
-        await notify_admin(context, f"download_callback xato (uid={uid}): {e}")
+        log.error(f"download_callback: {e}")
+        await safe_edit(msg, f"❌ Xato: {str(e)[:200]}")
 
 # ══════════════════════════════════════════════════════
 # HAVOLA ORQALI VIDEO YUKLASH
 # ══════════════════════════════════════════════════════
 
+PLATFORM_FMT = {
+    "YouTube":   "best[ext=mp4][filesize<50M]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+    "Instagram": "best[ext=mp4]/best",
+    "TikTok":    "best[ext=mp4]/best",
+    "Twitter/X": "best[ext=mp4]/best",
+    "Facebook":  "best[ext=mp4][filesize<50M]/best",
+    "VK":        "best[ext=mp4]/best",
+    "SoundCloud":"bestaudio/best",
+}
 MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
 )
 
-PLATFORM_FORMATS = {
-    "Instagram":  "best[ext=mp4]/best",
-    "TikTok":     "best[ext=mp4]/best",
-    "Twitter/X":  "best[ext=mp4]/best",
-    "Facebook":   "best[ext=mp4][filesize<50M]/best",
-    "SoundCloud": "bestaudio/best",
-    "YouTube":    "best[ext=mp4][filesize<50M]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
-    "VK":         "best[ext=mp4]/best",
-    "Noma'lum":   "best[ext=mp4][filesize<50M]/best",
-}
-
-async def download_video(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    url: str,
-    audio_only: bool = False,
-):
-    uid  = update.effective_user.id
+async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                         url: str, audio_only: bool = False):
+    uid = update.effective_user.id
     platform = detect_platform(url)
     ts = int(time.time())
 
     try:
         with UserTask(uid):
-            if audio_only:
-                msg = await update.message.reply_text(
-                    f"⏳ [{platform}] Audio yuklanmoqda..."
-                )
-            else:
-                msg = await update.message.reply_text(
-                    f"⏳ [{platform}] Video yuklanmoqda..."
-                )
-
+            msg = await update.message.reply_text(
+                f"⏳ [{platform}] {'Audio' if audio_only else 'Video'} yuklanmoqda..."
+            )
             loop = asyncio.get_running_loop()
             os.makedirs(DOWNLOAD_DIR, exist_ok=True)
             await maybe_update_ytdlp()
 
-            headers = {
-                "User-Agent": MOBILE_UA,
-                "Accept-Language": "en-US,en;q=0.9",
-            }
+            headers = {"User-Agent": MOBILE_UA, "Accept-Language": "en-US,en;q=0.9"}
 
-            # ── Audio rejimi ──────────────────────────────
+            # ── Audio rejimi ──
             if audio_only:
-                ydl_opts = {
-                    "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-                    "outtmpl": f"{DOWNLOAD_DIR}/audio_{ts}.%(ext)s",
-                    "quiet": True,
-                    "no_warnings": True,
-                    "socket_timeout": 60,
-                    "progress_hooks": [make_progress_hook(msg, loop)],
-                    "http_headers": headers,
-                    **get_cookies_opt(),
-                }
-
                 def do_audio():
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    with yt_dlp.YoutubeDL({
+                        "format": "bestaudio[ext=m4a]/bestaudio/best",
+                        "outtmpl": f"{DOWNLOAD_DIR}/audio_{ts}.%(ext)s",
+                        "quiet": True, "no_warnings": True, "socket_timeout": 60,
+                        "progress_hooks": [make_progress_hook(msg, loop)],
+                        "http_headers": headers, **get_cookies_opt(),
+                    }) as ydl:
                         return ydl.extract_info(url, download=True)
 
                 info = await run_in_executor(do_audio)
@@ -617,42 +525,33 @@ async def download_video(
                 if not filename:
                     await msg.edit_text("❌ Fayl yuklanmadi!")
                     return
-
                 await msg.delete()
                 with open(filename, "rb") as f:
                     await update.message.reply_audio(
-                        f,
-                        title=info.get("title", "Audio"),
-                        performer=info.get("uploader", ""),
+                        f, title=info.get("title", "Audio"),
+                        performer=info.get("uploader", "")
                     )
-                try:
-                    os.remove(filename)
-                except Exception:
-                    pass
+                try: os.remove(filename)
+                except: pass
                 return
 
-            # ── Video rejimi ──────────────────────────────
-            fmt = PLATFORM_FORMATS.get(platform, PLATFORM_FORMATS["Noma'lum"])
-            ydl_opts = {
-                "format": fmt,
-                "outtmpl": f"{DOWNLOAD_DIR}/video_{ts}.%(ext)s",
-                "quiet": True,
-                "no_warnings": True,
-                "socket_timeout": 60,
-                "concurrent_fragment_downloads": 4,
-                "merge_output_format": "mp4",
-                "progress_hooks": [make_progress_hook(msg, loop)],
-                "http_headers": headers,
-                **get_cookies_opt(),
-            }
+            # ── Video rejimi ──
+            fmt = PLATFORM_FMT.get(platform, "best[ext=mp4][filesize<50M]/best")
 
             def do_video():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL({
+                    "format": fmt,
+                    "outtmpl": f"{DOWNLOAD_DIR}/video_{ts}.%(ext)s",
+                    "quiet": True, "no_warnings": True, "socket_timeout": 60,
+                    "concurrent_fragment_downloads": 4,
+                    "merge_output_format": "mp4",
+                    "progress_hooks": [make_progress_hook(msg, loop)],
+                    "http_headers": headers, **get_cookies_opt(),
+                }) as ydl:
                     return ydl.extract_info(url, download=True)
 
             info = await run_in_executor(do_video)
             filename = find_file(DOWNLOAD_DIR, f"video_{ts}")
-
             if not filename:
                 await msg.edit_text("❌ Fayl yuklanmadi!")
                 return
@@ -661,15 +560,15 @@ async def download_video(
             title = info.get("title", "Video")
             vid_key = f"vid_{ts}"
 
-            # Video ma'lumotlarini saqlash
+            # Keyingi amallar uchun saqlab qo'yamiz
             context.bot_data[f"vfile_{vid_key}"] = filename
             context.bot_data[f"vinfo_{vid_key}"] = {
-                "title":    title,
+                "title": title,
                 "uploader": info.get("uploader", ""),
                 "saved_at": time.time(),
             }
 
-            keyboard = InlineKeyboardMarkup([[
+            kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🎵 Faqat audio",   callback_data=f"vaudio_{vid_key}"),
                 InlineKeyboardButton("🔍 Qo'shiqni top", callback_data=f"shazam_{vid_key}"),
             ]])
@@ -677,133 +576,48 @@ async def download_video(
             await msg.delete()
 
             if fsize > MAX_FILE_MB * 1024 * 1024:
+                # Video juda katta — audio sifatida yuboramiz
                 await update.message.reply_text(
-                    f"⚠️ Video juda katta ({human_size(fsize)}) — Telegram qabul qilmaydi.\n"
-                    "Faqat audio sifatida yuborilmoqda...",
+                    f"⚠️ Video katta ({human_size(fsize)}). Audio sifatida yuborilmoqda..."
                 )
-                # Katta videoni audio sifatida yuborish
-                audio_out = os.path.join(DOWNLOAD_DIR, f"big_audio_{ts}.mp3")
-                ok = await extract_audio_from_video(filename, audio_out)
-                if ok:
-                    await _send_audio_file(
-                        update.message, audio_out,
-                        title, info.get("uploader", ""),
-                        extra_markup=keyboard,
+                audio_out = os.path.join(DOWNLOAD_DIR, f"big_{ts}.mp3")
+                if await extract_audio(filename, audio_out):
+                    await split_and_send_audio(
+                        update.message, audio_out, title,
+                        info.get("uploader", ""), markup=kb
                     )
                 else:
                     await update.message.reply_text("❌ Audio ajratib bo'lmadi.")
-                try:
-                    os.remove(filename)
-                except Exception:
-                    pass
+                try: os.remove(filename)
+                except: pass
             else:
                 with open(filename, "rb") as f:
                     await update.message.reply_video(
-                        f,
-                        caption=f"✅ {title}",
-                        reply_markup=keyboard,
-                        supports_streaming=True,
+                        f, caption=f"✅ {title}",
+                        reply_markup=kb, supports_streaming=True,
                     )
 
-            _cleanup_bot_data(context)
-            _cleanup_old_files()
+            cleanup_bot_data(context)
+            cleanup_files()
 
     except TaskLimitExceeded:
         await update.message.reply_text(
-            f"⏳ Siz allaqachon {MAX_PARALLEL} ta yuklash qilmoqdasiz.\n"
-            "/cancel buyrug'i bilan bekor qilib, qayta urining."
+            f"⏳ Max {MAX_PARALLEL} ta parallel yuklash.\n/cancel bilan bekor qiling."
         )
     except Exception as e:
         err = str(e)
-        log.error(f"download_video xato (uid={uid}): {err}")
-        if "Private" in err or "login" in err.lower() or "authentication" in err.lower():
-            await _safe_edit(msg, "❌ Bu post shaxsiy (private). Ochiq havola yuboring!")
+        log.error(f"download_video uid={uid}: {err}")
+        if "private" in err.lower() or "login" in err.lower():
+            await safe_edit(msg, "❌ Bu post shaxsiy (private). Ochiq havola yuboring!")
         elif "Unsupported URL" in err:
-            await _safe_edit(
-                msg,
-                f"❌ [{platform}] ushbu havola qo'llab-quvvatlanmaydi.\n"
-                "YouTube / Instagram / TikTok / Twitter / VK / SoundCloud yuboring."
-            )
-        elif "Geo" in err or "geo" in err:
-            await _safe_edit(msg, "❌ Bu video sizning hududingizda mavjud emas.")
+            await safe_edit(msg, f"❌ [{platform}] qo'llab-quvvatlanmaydi.")
+        elif "geo" in err.lower():
+            await safe_edit(msg, "❌ Bu video sizning hududingizda mavjud emas.")
         elif "copyright" in err.lower():
-            await _safe_edit(msg, "❌ Bu video mualliflik huquqi tufayli bloklanган.")
+            await safe_edit(msg, "❌ Mualliflik huquqi tufayli bloklanган.")
         else:
-            await _safe_edit(msg, f"❌ Xato: {err[:250]}")
-        await notify_admin(context, f"download_video xato (uid={uid}, url={url}): {err[:300]}")
-
-async def _safe_edit(msg, text: str):
-    try:
-        await msg.edit_text(text)
-    except Exception:
-        pass
-
-# ══════════════════════════════════════════════════════
-# KATTA AUDIO FAYLNI BO'LIB YUBORISH
-# ══════════════════════════════════════════════════════
-
-async def _send_audio_file(
-    message,
-    audio_path: str,
-    title: str,
-    performer: str,
-    extra_markup=None,
-):
-    """
-    Audio faylni yuboradi.
-    50MB dan oshsa, qismlarga bo'lib yuboradi.
-    """
-    fsize = os.path.getsize(audio_path)
-
-    if fsize <= MAX_FILE_MB * 1024 * 1024:
-        with open(audio_path, "rb") as f:
-            await message.reply_audio(
-                f,
-                title=title,
-                performer=performer,
-                reply_markup=extra_markup,
-            )
-        try:
-            os.remove(audio_path)
-        except Exception:
-            pass
-        return
-
-    # Bo'lib yuborish
-    await message.reply_text(
-        f"⚠️ Audio katta ({human_size(fsize)}). Qismlarga bo'lib yuborilmoqda..."
-    )
-    parts = await split_audio_parts(audio_path)
-    if not parts:
-        await message.reply_text("❌ Audio bo'linmadi.")
-        try:
-            os.remove(audio_path)
-        except Exception:
-            pass
-        return
-
-    for i, part_path in enumerate(parts, 1):
-        try:
-            with open(part_path, "rb") as f:
-                await message.reply_audio(
-                    f,
-                    title=f"{title} (qism {i}/{len(parts)})",
-                    performer=performer,
-                    reply_markup=extra_markup if i == len(parts) else None,
-                )
-        except Exception as e:
-            await message.reply_text(f"❌ Qism {i} yuborilmadi: {e}")
-        finally:
-            try:
-                os.remove(part_path)
-            except Exception:
-                pass
-        await asyncio.sleep(0.5)
-
-    try:
-        os.remove(audio_path)
-    except Exception:
-        pass
+            await safe_edit(msg, f"❌ Xato: {err[:200]}")
+        await notify_admin(context, f"download_video xato (uid={uid}): {err[:300]}")
 
 # ══════════════════════════════════════════════════════
 # VIDEO → FAQAT AUDIO
@@ -813,14 +627,14 @@ async def video_audio_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    vid_key = q.data.replace("vaudio_", "", 1)
+    vid_key = q.data[7:]  # "vaudio_" ni olib tashlash
     filename = context.bot_data.get(f"vfile_{vid_key}")
     info = context.bot_data.get(f"vinfo_{vid_key}", {})
 
     if not filename or not os.path.exists(filename):
         await q.message.reply_text(
             "❌ Video fayli topilmadi.\n"
-            "Bot qayta ishga tushirilgan bo'lishi mumkin. Havolani qayta yuboring."
+            "Bot qayta ishga tushgan bo'lishi mumkin. Havolani qayta yuboring."
         )
         return
 
@@ -830,164 +644,111 @@ async def video_audio_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             ts = int(time.time())
             audio_out = os.path.join(DOWNLOAD_DIR, f"vaudio_{ts}.mp3")
 
-            ok = await extract_audio_from_video(filename, audio_out)
-            if not ok:
+            if not await extract_audio(filename, audio_out):
                 await msg.edit_text(
                     "❌ Audio ajratib bo'lmadi.\n"
-                    "ffmpeg o'rnatilganini tekshiring: apt install ffmpeg"
+                    f"FFmpeg yo'li: {FFMPEG}\n"
+                    "Serverni tekshiring: apt install ffmpeg"
                 )
                 return
 
             await msg.delete()
-            await _send_audio_file(
+            await split_and_send_audio(
                 q.message, audio_out,
                 info.get("title", "Audio"),
                 info.get("uploader", ""),
             )
     except TaskLimitExceeded:
-        await q.answer(
-            f"⏳ Parallel yuklanishlar limiti ({MAX_PARALLEL}) to'ldi.",
-            show_alert=True,
-        )
+        await q.answer(f"⏳ Max {MAX_PARALLEL} ta parallel.", show_alert=True)
     except Exception as e:
-        log.error(f"video_audio_callback xato: {e}")
-        try:
-            await msg.edit_text(f"❌ Xato: {e}")
-        except Exception:
-            pass
+        log.error(f"video_audio_callback: {e}")
+        try: await msg.edit_text(f"❌ Xato: {e}")
+        except: pass
 
 # ══════════════════════════════════════════════════════
-# SHAZAM CALLBACK
+# SHAZAM — VIDEO DAN QOSHIQ TOPISH
 # ══════════════════════════════════════════════════════
 
 async def shazam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    vid_key = q.data.replace("shazam_", "", 1)
+    vid_key = q.data[7:]  # "shazam_" ni olib tashlash
     filename = context.bot_data.get(f"vfile_{vid_key}")
 
     if not filename or not os.path.exists(filename):
         await q.message.reply_text(
             "❌ Video fayli topilmadi.\n"
-            "Bot qayta ishga tushirilgan bo'lishi mumkin. Havolani qayta yuboring."
+            "Bot qayta ishga tushgan bo'lishi mumkin. Havolani qayta yuboring."
         )
         return
 
-    if not _check_shazamio():
-        await q.message.reply_text(
-            "❌ Shazam moduli o'rnatilmagan.\n"
-            "Server administratori quyidagini bajarishi kerak:\n"
-            "`pip install shazamio`",
-            parse_mode="Markdown",
-        )
-        return
-
-    if not await _check_ffmpeg():
-        await q.message.reply_text(
-            "❌ FFmpeg o'rnatilmagan.\n"
-            "`apt install ffmpeg`",
-            parse_mode="Markdown",
-        )
-        return
-
-    msg = await q.message.reply_text("🎧 Qo'shiq tanib olinmoqda...")
+    msg = await q.message.reply_text("🎧 Qo'shiq aniqlanmoqda...")
     ts = int(time.time())
-    shazam_audio = os.path.join(DOWNLOAD_DIR, f"shazam_{ts}.mp3")
+    shazam_mp3 = os.path.join(DOWNLOAD_DIR, f"shazam_{ts}.mp3")
 
-    ok = await extract_audio_from_video(filename, shazam_audio, duration=SHAZAM_SEC)
-    if not ok:
-        await msg.edit_text("❌ Audio ajratib bo'lmadi. FFmpeg-ni tekshiring.")
+    # Videoning birinchi 30 soniyasidan audio olamiz
+    if not await extract_audio(filename, shazam_mp3, duration=SHAZAM_SEC):
+        await msg.edit_text(
+            "❌ Audio ajratib bo'lmadi.\n"
+            f"FFmpeg: {FFMPEG}\n"
+            "apt install ffmpeg"
+        )
         return
 
-    result = await recognize_song(shazam_audio)
-    try:
-        os.remove(shazam_audio)
-    except Exception:
-        pass
+    result = await recognize_song(shazam_mp3)
+    try: os.remove(shazam_mp3)
+    except: pass
 
     if not result:
         await msg.edit_text(
             "❌ Qo'shiq tanib olinmadi.\n"
-            "Sabab: video shovqinli yoki qo'shiq bazada yo'q."
+            "Sabab: video shovqinli, instrumental yoki Shazam bazasida yo'q."
         )
         return
 
-    await _deliver_shazam_result(msg, q.message, result)
-
-async def _deliver_shazam_result(msg, reply_to, result: dict):
-    text = f"🎵 *{result['title']}*\n👤 {result['artist']}\n"
-    if result.get("genre"):
-        text += f"🎸 {result['genre']}\n"
-
-    search_q = f"{result['artist']} {result['title']}"
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("⬇️ Yuklab olish", callback_data=f"sdl_{search_q[:50]}")
-    ]])
-
-    if result.get("cover"):
-        try:
-            await msg.delete()
-            await reply_to.reply_photo(
-                result["cover"],
-                caption=text,
-                parse_mode="Markdown",
-                reply_markup=keyboard,
-            )
-            return
-        except Exception:
-            pass
-
-    await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    await send_shazam_result(msg, q.message, result)
 
 # ══════════════════════════════════════════════════════
-# SHAZAM TOPGAN QOSHIQNI YUKLAB OLISH
+# SHAZAM TOPGAN QOSHIQNI YOUTUBE DAN YUKLAB OLISH
 # ══════════════════════════════════════════════════════
 
 async def search_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    search_q = q.data.replace("sdl_", "", 1)
+    search_q = q.data[4:]  # "sdl_" ni olib tashlash
     msg = await q.message.reply_text("🔍 Qidirilmoqda...")
 
     try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "extract_flat": False,
-            "socket_timeout": 20,
-            "noplaylist": True,
-            **get_cookies_opt(),
-        }
-
         def do_search():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL({
+                "quiet": True, "no_warnings": True,
+                "skip_download": True, "socket_timeout": 20,
+                "noplaylist": True, **get_cookies_opt(),
+            }) as ydl:
                 return ydl.extract_info(f"ytsearch3:{search_q}", download=False)
 
         info = await run_in_executor(do_search)
         entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
-
         if not entries:
             await msg.edit_text("❌ Topilmadi!")
             return
 
-        keyboard = []
+        kb = []
         for e in entries[:3]:
             title = (e.get("title") or "Nomsiz")[:45]
-            dur   = int(e.get("duration") or 0)
-            keyboard.append([InlineKeyboardButton(
+            dur = int(e.get("duration") or 0)
+            kb.append([InlineKeyboardButton(
                 f"🎵 {title}  {dur//60}:{dur%60:02d}",
-                callback_data=f"dl_{e['id']}",
+                callback_data=f"dl_{e['id']}"
             )])
-
         await msg.edit_text(
             f"🎶 *Natijalar:* {search_q}",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown",
         )
     except Exception as e:
-        log.error(f"search_dl_callback xato: {e}")
+        log.error(f"search_dl_callback: {e}")
         await msg.edit_text("❌ Qidirishda xato yuz berdi.")
 
 # ══════════════════════════════════════════════════════
@@ -995,77 +756,56 @@ async def search_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ══════════════════════════════════════════════════════
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _check_shazamio():
-        await update.message.reply_text(
-            "❌ Shazam moduli o'rnatilmagan.\n"
-            "`pip install shazamio`",
-            parse_mode="Markdown",
-        )
-        return
-
-    if not await _check_ffmpeg():
-        await update.message.reply_text(
-            "❌ FFmpeg o'rnatilmagan.\n"
-            "`apt install ffmpeg`",
-            parse_mode="Markdown",
-        )
-        return
-
     file = (
-        update.message.video
-        or update.message.audio
-        or update.message.voice
-        or update.message.document
+        update.message.video or update.message.audio or
+        update.message.voice or update.message.document
     )
     if not file:
         await update.message.reply_text("❌ Fayl topilmadi.")
         return
 
-    file_size = getattr(file, "file_size", 0) or 0
-    if file_size > 20 * 1024 * 1024:
+    fsize = getattr(file, "file_size", 0) or 0
+    if fsize > 20 * 1024 * 1024:
         await update.message.reply_text(
-            f"❌ Fayl juda katta ({human_size(file_size)}).\n"
-            "Telegram max 20MB fayl uzatadi. Kichikroq fayl yuboring."
+            f"❌ Fayl juda katta ({human_size(fsize)}).\n"
+            "Telegram max 20MB fayl uzatadi."
         )
         return
 
-    msg = await update.message.reply_text("🎧 Qo'shiq tanib olinmoqda...")
+    msg = await update.message.reply_text("🎧 Qo'shiq aniqlanmoqda...")
     ts = int(time.time())
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    tmp_path = os.path.join(DOWNLOAD_DIR, f"tg_{ts}_{file.file_id[:8]}.tmp")
+    tmp = os.path.join(DOWNLOAD_DIR, f"tg_{ts}.tmp")
 
     try:
         tg_file = await context.bot.get_file(file.file_id)
-        await tg_file.download_to_drive(tmp_path)
+        await tg_file.download_to_drive(tmp)
     except Exception as e:
         await msg.edit_text(f"❌ Fayl yuklab olinmadi: {e}")
         return
 
-    shazam_audio = tmp_path + "_shazam.mp3"
-    ok = await extract_audio_from_video(tmp_path, shazam_audio, duration=SHAZAM_SEC)
-    try:
-        os.remove(tmp_path)
-    except Exception:
-        pass
-
-    if not ok:
-        await msg.edit_text("❌ FFmpeg xato. Serverni tekshiring.")
+    shazam_mp3 = tmp + ".mp3"
+    if not await extract_audio(tmp, shazam_mp3, duration=SHAZAM_SEC):
+        await msg.edit_text("❌ Audio ajratib bo'lmadi. FFmpeg tekshiring.")
+        try: os.remove(tmp)
+        except: pass
         return
 
-    result = await recognize_song(shazam_audio)
-    try:
-        os.remove(shazam_audio)
-    except Exception:
-        pass
+    try: os.remove(tmp)
+    except: pass
+
+    result = await recognize_song(shazam_mp3)
+    try: os.remove(shazam_mp3)
+    except: pass
 
     if not result:
         await msg.edit_text(
             "❌ Qo'shiq tanib olinmadi.\n"
-            "Audio sifati past yoki qo'shiq Shazam bazasida yo'q."
+            "Audio sifati past yoki Shazam bazasida yo'q."
         )
         return
 
-    await _deliver_shazam_result(msg, update.message, result)
+    await send_shazam_result(msg, update.message, result)
 
 # ══════════════════════════════════════════════════════
 # MATN HANDLER
@@ -1075,12 +815,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     parts = text.split()
 
-    # "havola audio" → audio rejimi
     if len(parts) >= 2 and is_url(parts[0]) and parts[-1].lower() == "audio":
         await download_video(update, context, parts[0], audio_only=True)
-        return
-
-    if is_url(text):
+    elif is_url(text):
         await download_video(update, context, text)
     else:
         await search_music(update, text)
@@ -1111,8 +848,5 @@ app.add_handler(CallbackQueryHandler(shazam_callback,      pattern=r"^shazam_"))
 app.add_handler(CallbackQueryHandler(search_dl_callback,   pattern=r"^sdl_"))
 
 log.info("✅ Music Bot ishlamoqda!")
-app.run_polling(
-    poll_interval=0.3,
-    timeout=30,
-    drop_pending_updates=True,
-)
+print("✅ Bot ishlamoqda!")
+app.run_polling(poll_interval=0.3, timeout=30, drop_pending_updates=True)
