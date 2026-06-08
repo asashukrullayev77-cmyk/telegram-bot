@@ -8,7 +8,7 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 
-TOKEN = os.environ.get("BOT_TOKEN", "8802164056:AAH5xRp6OQGPDDKBPrqrK6x1QuyUBLVH5cQ")
+TOKEN = "8802164056:AAHUzN18Lr5a8S3lhKmuIJ4Ix0OP4X5_Jo4"
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "/root/cookies.txt")
 DOWNLOAD_DIR = "downloads"
 
