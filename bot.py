@@ -72,7 +72,7 @@ FFMPEG = _find_ffmpeg()
 log.info(f"FFmpeg: {FFMPEG}")
 
 # ══════════════════════════════════════════════════════
-# YT-DLP YANGILASH
+# YT-DLP YANGILASH (xavfsizroq usul)
 # ══════════════════════════════════════════════════════
 
 async def maybe_update_ytdlp():
@@ -81,13 +81,26 @@ async def maybe_update_ytdlp():
         return
     _ytdlp_last_update = time.time()
     try:
+        # yt-dlp o'z-o'zini yangilash buyrug'i
         proc = await asyncio.create_subprocess_exec(
-            "pip", "install", "-q", "--upgrade", "yt-dlp",
+            "yt-dlp", "-U",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
         await asyncio.wait_for(proc.wait(), timeout=120)
         log.info("yt-dlp yangilandi")
+    except FileNotFoundError:
+        # agar yt-dlp to'g'ridan-to'g'ri topilmasa, pip orqali
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pip", "install", "-q", "--upgrade", "yt-dlp",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=120)
+            log.info("yt-dlp pip orqali yangilandi")
+        except Exception as e:
+            log.warning(f"yt-dlp yangilanmadi: {e}")
     except Exception as e:
         log.warning(f"yt-dlp yangilanmadi: {e}")
 
@@ -139,9 +152,12 @@ def make_progress_hook(msg, loop):
             if pct and pct != state["p"] and now - state["t"] > 4:
                 state["p"] = pct
                 state["t"] = now
-                asyncio.run_coroutine_threadsafe(
-                    msg.edit_text(f"⏳ Yuklanmoqda... {pct}\n⚡ Tezlik: {spd}"), loop
-                )
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        msg.edit_text(f"⏳ Yuklanmoqda... {pct}\n⚡ Tezlik: {spd}"), loop
+                    )
+                except Exception:
+                    pass  # xabarni tahrirlab bo'lmasa, indamay yutamiz
     return hook
 
 async def run_in_executor(func):
@@ -164,6 +180,10 @@ def cleanup_bot_data(context):
             vk = key[6:]
             context.bot_data.pop(f"vfile_{vk}", None)
             context.bot_data.pop(f"vinfo_{vk}", None)
+
+async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
+    cleanup_files()
+    cleanup_bot_data(context)
 
 async def notify_admin(context, text: str):
     for aid in ADMIN_IDS:
@@ -227,9 +247,11 @@ async def split_and_send_audio(message, audio_path: str, title: str, performer: 
     base = audio_path.rsplit(".", 1)[0]
     offset, idx = 0, 0
     parts = []
+    # 10 daqiqali bo'laklar (600 sekund) – 320 kbps da ~24 MB, xavfsiz
+    slice_duration = 600
     while True:
         part = f"{base}_part{idx}.mp3"
-        cmd = [FFMPEG, "-i", audio_path, "-ss", str(offset), "-t", "3600",
+        cmd = [FFMPEG, "-i", audio_path, "-ss", str(offset), "-t", str(slice_duration),
                "-acodec", "copy", "-y", part]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
@@ -240,7 +262,7 @@ async def split_and_send_audio(message, audio_path: str, title: str, performer: 
             except: pass
             break
         parts.append(part)
-        offset += 3600
+        offset += slice_duration
         idx += 1
         if idx > 20: break
 
@@ -364,7 +386,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         age_h = (time.time() - os.path.getmtime(COOKIES_FILE)) / 3600
         cookie_st = f"✅ Bor ({age_h:.0f} soat oldin)" + (" ⚠️ Eski!" if age_h > 720 else "")
     else:
-        cookie_st = "❌ Yo'q — /setcookie bilan yuboring"
+        cookie_st = "❌ Yo'q — faqat admin o'rnatishi mumkin"
 
     total, count = 0, 0
     try:
@@ -389,13 +411,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ══════════════════════════════════════════════════════
-# COOKIE YANGILASH
+# COOKIE YANGILASH (faqat admin)
 # ══════════════════════════════════════════════════════
 
 async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if ADMIN_IDS and uid not in ADMIN_IDS:
-        await update.message.reply_text("❌ Faqat admin uchun.")
+    if not ADMIN_IDS or uid not in ADMIN_IDS:
+        await update.message.reply_text("❌ Bu buyruq faqat admin uchun.")
         return
 
     text = update.message.text.strip()
@@ -422,13 +444,12 @@ async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Xato: {e}")
 
-
 async def handle_cookie_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     doc = update.message.document
     fname = doc.file_name or ""
 
-    if fname.endswith(".txt") and (not ADMIN_IDS or uid in ADMIN_IDS):
+    if fname.endswith(".txt") and ADMIN_IDS and uid in ADMIN_IDS:
         msg = await update.message.reply_text("⏳ Cookie yuklanmoqda...")
         try:
             tg_file = await context.bot.get_file(doc.file_id)
@@ -442,7 +463,6 @@ async def handle_cookie_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await msg.edit_text(f"❌ Xato: {e}")
     else:
         await handle_media(update, context)
-
 
 async def check_cookie_expiry(context: ContextTypes.DEFAULT_TYPE):
     if not os.path.exists(COOKIES_FILE):
@@ -524,6 +544,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     video_id = q.data[3:]
     url = f"https://www.youtube.com/watch?v={video_id}"
+    msg = None
 
     try:
         with UserTask(uid):
@@ -534,7 +555,6 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             def do_dl():
                 with yt_dlp.YoutubeDL({
-                    # Eng moslashuvchan format — istalgan sifatda audio oladi
                     "format": "bestaudio/best",
                     "outtmpl": f"{DOWNLOAD_DIR}/{video_id}.%(ext)s",
                     "quiet": True,
@@ -542,7 +562,6 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "socket_timeout": 60,
                     "concurrent_fragment_downloads": 4,
                     "progress_hooks": [make_progress_hook(msg, loop)],
-                    # MP3 ga avtomatik konvert
                     "postprocessors": [{
                         "key": "FFmpegExtractAudio",
                         "preferredcodec": "mp3",
@@ -553,8 +572,6 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return ydl.extract_info(url, download=True)
 
             info = await run_in_executor(do_dl)
-
-            # MP3 ga konvert bo'lgani uchun .mp3 qidirish
             filename = find_file(DOWNLOAD_DIR, video_id)
             if not filename:
                 await msg.edit_text("❌ Fayl yuklanmadi!")
@@ -583,10 +600,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         err = str(e)
         log.error(f"download_callback: {err}")
         if "Sign in" in err or "confirm" in err.lower() or "bot" in err.lower():
-            await safe_edit(msg,
-                "❌ YouTube cookie talab qilmoqda.\n"
-                "cookies.txt faylni botga yuboring."
-            )
+            await safe_edit(msg, "❌ YouTube cookie talab qilmoqda.\ncookies.txt faylni admin yuklashi kerak.")
             await notify_admin(context, "⚠️ Cookie eskirgan! Yangilang.")
         else:
             await safe_edit(msg, f"❌ Xato: {err[:200]}")
@@ -601,9 +615,7 @@ MOBILE_UA = (
 )
 
 def get_video_format(platform: str) -> str:
-    """Har bir platforma uchun eng ishonchli format"""
     if platform == "YouTube":
-        # Avval mp4 sinab ko'r, bo'lmasa istalgan formatni ol
         return "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
     elif platform in ("Instagram", "TikTok", "Twitter/X", "VK"):
         return "best[ext=mp4]/best"
@@ -632,7 +644,6 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
             headers = {"User-Agent": MOBILE_UA, "Accept-Language": "en-US,en;q=0.9"}
 
-            # ── FAQAT AUDIO ──
             if audio_only:
                 def do_audio():
                     with yt_dlp.YoutubeDL({
@@ -665,9 +676,8 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 except: pass
                 return
 
-            # ── VIDEO ──
+            # VIDEO
             fmt = get_video_format(platform)
-
             def do_video():
                 with yt_dlp.YoutubeDL({
                     "format": fmt,
@@ -685,7 +695,6 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
             filename = find_file(DOWNLOAD_DIR, f"video_{ts}")
 
             if not filename:
-                # Video yuklanmadi — audio sifatida sinab ko'r
                 await msg.edit_text("⚠️ Video yuklanmadi, audio sifatida urinib ko'rilmoqda...")
                 def do_audio_fallback():
                     with yt_dlp.YoutubeDL({
@@ -728,7 +737,6 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 "saved_at": time.time(),
             }
 
-            # Tugmalar: audio ajratish + Shazam
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🎵 Faqat audio",   callback_data=f"vaudio_{vid_key}"),
                 InlineKeyboardButton("🔍 Qo'shiqni top", callback_data=f"shazam_{vid_key}"),
@@ -755,9 +763,6 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         reply_markup=kb, supports_streaming=True,
                     )
 
-            cleanup_bot_data(context)
-            cleanup_files()
-
     except TaskLimitExceeded:
         await update.message.reply_text(
             f"⏳ Max {MAX_PARALLEL} ta parallel yuklash.\n/cancel bilan bekor qiling."
@@ -771,7 +776,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
         elif "Unsupported URL" in err:
             txt = f"❌ [{platform}] qo'llab-quvvatlanmaydi."
         elif "Sign in" in err or "confirm" in err.lower():
-            txt = "❌ Cookie talab qilmoqda.\ncookies.txt faylni botga yuboring."
+            txt = "❌ Cookie talab qilmoqda.\ncookies.txt faylni admin yuklashi kerak."
             await notify_admin(context, "⚠️ Cookie eskirgan! Yangilang.")
         elif "geo" in err.lower():
             txt = "❌ Bu video sizning hududingizda mavjud emas."
@@ -972,6 +977,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 app = ApplicationBuilder().token(TOKEN).build()
+
+# Joblarni qo'shamiz (avtomatik tozalash va cookie tekshiruvi)
+if app.job_queue:
+    app.job_queue.run_repeating(cleanup_job, interval=3600, first=10)
+    app.job_queue.run_repeating(check_cookie_expiry, interval=43200, first=60)
+else:
+    log.warning("JobQueue ishlamayapti, tozalash va cookie tekshiruvi o‘chirilgan.")
 
 app.add_handler(CommandHandler("start",     cmd_start))
 app.add_handler(CommandHandler("help",      cmd_help))
