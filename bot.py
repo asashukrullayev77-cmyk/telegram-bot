@@ -16,13 +16,14 @@ from telegram.ext import (
 # SOZLAMALAR
 # ══════════════════════════════════════════════════════
 
-TOKEN        = "8802164056:AAHUzN18Lr5a8S3lhKmuIJ4Ix0OP4X5_Jo4"
-COOKIES_FILE = os.environ.get("COOKIES_FILE", "/tmp/cookies.txt")
-ADMIN_IDS    = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
+TOKEN = "8802164056:AAHUzN18Lr5a8S3lhKmuIJ4Ix0OP4X5_Jo4"
 DOWNLOAD_DIR = "downloads"
 MAX_PARALLEL = 2
-MAX_FILE_MB  = 49
-SHAZAM_SEC   = 30
+MAX_FILE_MB = 49
+SHAZAM_SEC = 30
+
+# Agar shu fayl mavjud bo'lsa, bot uni avtomatik ishlatadi
+COOKIE_PATH = "cookies.txt"   # Shu papkadagi fayl, yoki to‘liq yo‘l: "/home/user/cookies.txt"
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -39,20 +40,17 @@ _user_tasks: dict[int, int] = defaultdict(int)
 _ytdlp_last_update: float = 0
 
 # ══════════════════════════════════════════════════════
-# COOKIE SETUP
+# COOKIE FUNKSIYASI (agar fayl mavjud bo'lsa)
 # ══════════════════════════════════════════════════════
 
-def _setup_cookies():
-    cookie_data = os.environ.get("COOKIES_DATA", "").strip()
-    if cookie_data:
-        try:
-            with open(COOKIES_FILE, "w", encoding="utf-8") as f:
-                f.write(cookie_data)
-            log.info(f"Cookie yozildi: {COOKIES_FILE}")
-        except Exception as e:
-            log.error(f"Cookie yozish xato: {e}")
-
-_setup_cookies()
+def get_cookie_opt() -> dict:
+    """Agar cookies.txt fayli mavjud bo'lsa, uni ishlat, aks holda bo'sh dict qaytar."""
+    if os.path.exists(COOKIE_PATH):
+        log.info(f"Cookie fayli topildi: {COOKIE_PATH}")
+        return {"cookiefile": COOKIE_PATH}
+    else:
+        log.info("Cookie fayli topilmadi, cookie ishlatilmaydi.")
+        return {}
 
 # ══════════════════════════════════════════════════════
 # FFMPEG
@@ -72,7 +70,7 @@ FFMPEG = _find_ffmpeg()
 log.info(f"FFmpeg: {FFMPEG}")
 
 # ══════════════════════════════════════════════════════
-# YT-DLP YANGILASH (xavfsizroq usul)
+# YT-DLP YANGILASH
 # ══════════════════════════════════════════════════════
 
 async def maybe_update_ytdlp():
@@ -81,7 +79,6 @@ async def maybe_update_ytdlp():
         return
     _ytdlp_last_update = time.time()
     try:
-        # yt-dlp o'z-o'zini yangilash buyrug'i
         proc = await asyncio.create_subprocess_exec(
             "yt-dlp", "-U",
             stdout=asyncio.subprocess.DEVNULL,
@@ -90,7 +87,6 @@ async def maybe_update_ytdlp():
         await asyncio.wait_for(proc.wait(), timeout=120)
         log.info("yt-dlp yangilandi")
     except FileNotFoundError:
-        # agar yt-dlp to'g'ridan-to'g'ri topilmasa, pip orqali
         try:
             proc = await asyncio.create_subprocess_exec(
                 "pip", "install", "-q", "--upgrade", "yt-dlp",
@@ -107,11 +103,6 @@ async def maybe_update_ytdlp():
 # ══════════════════════════════════════════════════════
 # YORDAMCHILAR
 # ══════════════════════════════════════════════════════
-
-def get_cookies_opt() -> dict:
-    if os.path.exists(COOKIES_FILE):
-        return {"cookiefile": COOKIES_FILE}
-    return {}
 
 def is_url(text: str) -> bool:
     return text.startswith("http://") or text.startswith("https://")
@@ -157,7 +148,7 @@ def make_progress_hook(msg, loop):
                         msg.edit_text(f"⏳ Yuklanmoqda... {pct}\n⚡ Tezlik: {spd}"), loop
                     )
                 except Exception:
-                    pass  # xabarni tahrirlab bo'lmasa, indamay yutamiz
+                    pass
     return hook
 
 async def run_in_executor(func):
@@ -184,11 +175,6 @@ def cleanup_bot_data(context):
 async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
     cleanup_files()
     cleanup_bot_data(context)
-
-async def notify_admin(context, text: str):
-    for aid in ADMIN_IDS:
-        try: await context.bot.send_message(aid, f"🔔 {text}")
-        except: pass
 
 async def safe_edit(msg, text: str):
     try: await msg.edit_text(text)
@@ -247,7 +233,6 @@ async def split_and_send_audio(message, audio_path: str, title: str, performer: 
     base = audio_path.rsplit(".", 1)[0]
     offset, idx = 0, 0
     parts = []
-    # 10 daqiqali bo'laklar (600 sekund) – 320 kbps da ~24 MB, xavfsiz
     slice_duration = 600
     while True:
         part = f"{base}_part{idx}.mp3"
@@ -373,7 +358,6 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ Hozir faol yuklanish yo'q.")
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
     try:
         import shazamio
         shazam_st = f"✅ {shazamio.__version__}"
@@ -381,12 +365,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shazam_st = "❌ O'rnatilmagan"
 
     ffmpeg_st = f"✅ {FFMPEG}" if shutil.which("ffmpeg") else "❌ Topilmadi"
-
-    if os.path.exists(COOKIES_FILE):
-        age_h = (time.time() - os.path.getmtime(COOKIES_FILE)) / 3600
-        cookie_st = f"✅ Bor ({age_h:.0f} soat oldin)" + (" ⚠️ Eski!" if age_h > 720 else "")
-    else:
-        cookie_st = "❌ Yo'q — faqat admin o'rnatishi mumkin"
+    cookie_st = "✅ Bor" if os.path.exists(COOKIE_PATH) else "❌ Yo'q (faqat ochiq videolar)"
 
     total, count = 0, 0
     try:
@@ -397,82 +376,15 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 count += 1
     except: pass
 
-    id_line = f"\n👤 Sizning ID: `{uid}`" if uid in ADMIN_IDS else ""
-
     await update.message.reply_text(
         "📊 *Bot holati*\n\n"
         f"• FFmpeg: {ffmpeg_st}\n"
         f"• Shazam: {shazam_st}\n"
         f"• Cookie: {cookie_st}\n"
         f"• Faol yuklanishlar: {sum(_user_tasks.values())}\n"
-        f"• Vaqtinchalik fayllar: {count} ta ({human_size(total)})"
-        f"{id_line}",
+        f"• Vaqtinchalik fayllar: {count} ta ({human_size(total)})",
         parse_mode="Markdown",
     )
-
-# ══════════════════════════════════════════════════════
-# COOKIE YANGILASH (faqat admin)
-# ══════════════════════════════════════════════════════
-
-async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if not ADMIN_IDS or uid not in ADMIN_IDS:
-        await update.message.reply_text("❌ Bu buyruq faqat admin uchun.")
-        return
-
-    text = update.message.text.strip()
-    parts = text.split(None, 1)
-    if len(parts) < 2:
-        await update.message.reply_text(
-            "📋 *Cookie yuborish usullari:*\n\n"
-            "1️⃣ *Matn sifatida:*\n"
-            "`/setcookie [cookies.txt mazmuni]`\n\n"
-            "2️⃣ *Fayl sifatida:*\n"
-            "cookies.txt faylni to'g'ridan-to'g'ri yuboring",
-            parse_mode="Markdown"
-        )
-        return
-
-    cookie_text = parts[1].strip()
-    try:
-        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
-            f.write(cookie_text)
-        await update.message.reply_text(
-            f"✅ Cookie yangilandi!\nHajm: {len(cookie_text)} belgi"
-        )
-        log.info(f"Cookie yangilandi (uid={uid})")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Xato: {e}")
-
-async def handle_cookie_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    doc = update.message.document
-    fname = doc.file_name or ""
-
-    if fname.endswith(".txt") and ADMIN_IDS and uid in ADMIN_IDS:
-        msg = await update.message.reply_text("⏳ Cookie yuklanmoqda...")
-        try:
-            tg_file = await context.bot.get_file(doc.file_id)
-            await tg_file.download_to_drive(COOKIES_FILE)
-            size = os.path.getsize(COOKIES_FILE)
-            await msg.edit_text(
-                f"✅ Cookie fayl yangilandi!\nHajm: {human_size(size)}"
-            )
-            log.info(f"Cookie fayl yangilandi (uid={uid})")
-        except Exception as e:
-            await msg.edit_text(f"❌ Xato: {e}")
-    else:
-        await handle_media(update, context)
-
-async def check_cookie_expiry(context: ContextTypes.DEFAULT_TYPE):
-    if not os.path.exists(COOKIES_FILE):
-        await notify_admin(context, "⚠️ Cookie fayl yo'q! Bot YouTube dan yuklay olmaydi.")
-        return
-    age_days = (time.time() - os.path.getmtime(COOKIES_FILE)) / 86400
-    if age_days > 40:
-        await notify_admin(context, f"🚨 Cookie {age_days:.0f} kun oldin yangilangan — ESKIRGAN!")
-    elif age_days > 25:
-        await notify_admin(context, f"⚠️ Cookie {age_days:.0f} kun oldin yangilangan. Tez orada yangilang.")
 
 # ══════════════════════════════════════════════════════
 # MUSIQA QIDIRISH
@@ -490,7 +402,7 @@ async def search_music(update: Update, query: str):
                 "socket_timeout": 20,
                 "noplaylist": True,
                 "ignoreerrors": True,
-                **get_cookies_opt(),
+                **get_cookie_opt(),
             }) as ydl:
                 return ydl.extract_info(f"ytsearch8:{query}", download=False)
 
@@ -535,7 +447,7 @@ async def search_music(update: Update, query: str):
         await msg.edit_text("❌ Qidirishda xato yuz berdi.")
 
 # ══════════════════════════════════════════════════════
-# YOUTUBE AUDIO YUKLASH (catalog orqali)
+# YOUTUBE AUDIO YUKLASH (katalog orqali)
 # ══════════════════════════════════════════════════════
 
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -567,7 +479,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "preferredcodec": "mp3",
                         "preferredquality": "192",
                     }],
-                    **get_cookies_opt(),
+                    **get_cookie_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
 
@@ -600,8 +512,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         err = str(e)
         log.error(f"download_callback: {err}")
         if "Sign in" in err or "confirm" in err.lower() or "bot" in err.lower():
-            await safe_edit(msg, "❌ YouTube cookie talab qilmoqda.\ncookies.txt faylni admin yuklashi kerak.")
-            await notify_admin(context, "⚠️ Cookie eskirgan! Yangilang.")
+            await safe_edit(msg, "❌ YouTube bu videoni yuklashga ruxsat bermadi. (Yosh cheklovi yoki maxfiy video)")
         else:
             await safe_edit(msg, f"❌ Xato: {err[:200]}")
 
@@ -657,7 +568,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                             "preferredcodec": "mp3",
                             "preferredquality": "192",
                         }],
-                        **get_cookies_opt(),
+                        **get_cookie_opt(),
                     }) as ydl:
                         return ydl.extract_info(url, download=True)
 
@@ -687,7 +598,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "merge_output_format": "mp4",
                     "progress_hooks": [make_progress_hook(msg, loop)],
                     "http_headers": headers,
-                    **get_cookies_opt(),
+                    **get_cookie_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
 
@@ -707,7 +618,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                             "preferredquality": "192",
                         }],
                         "http_headers": headers,
-                        **get_cookies_opt(),
+                        **get_cookie_opt(),
                     }) as ydl:
                         return ydl.extract_info(url, download=True)
 
@@ -776,8 +687,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
         elif "Unsupported URL" in err:
             txt = f"❌ [{platform}] qo'llab-quvvatlanmaydi."
         elif "Sign in" in err or "confirm" in err.lower():
-            txt = "❌ Cookie talab qilmoqda.\ncookies.txt faylni admin yuklashi kerak."
-            await notify_admin(context, "⚠️ Cookie eskirgan! Yangilang.")
+            txt = "❌ YouTube bu videoni yuklashga ruxsat bermadi. (Yosh cheklovi yoki maxfiy video)"
         elif "geo" in err.lower():
             txt = "❌ Bu video sizning hududingizda mavjud emas."
         elif "format" in err.lower() or "not available" in err.lower():
@@ -875,7 +785,7 @@ async def search_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "quiet": True, "no_warnings": True,
                 "skip_download": True, "extract_flat": "in_playlist",
                 "socket_timeout": 20, "noplaylist": True,
-                **get_cookies_opt(),
+                **get_cookie_opt(),
             }) as ydl:
                 return ydl.extract_info(f"ytsearch3:{search_q}", download=False)
 
@@ -978,23 +888,17 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 app = ApplicationBuilder().token(TOKEN).build()
 
-# Joblarni qo'shamiz (avtomatik tozalash va cookie tekshiruvi)
 if app.job_queue:
     app.job_queue.run_repeating(cleanup_job, interval=3600, first=10)
-    app.job_queue.run_repeating(check_cookie_expiry, interval=43200, first=60)
-else:
-    log.warning("JobQueue ishlamayapti, tozalash va cookie tekshiruvi o‘chirilgan.")
 
 app.add_handler(CommandHandler("start",     cmd_start))
 app.add_handler(CommandHandler("help",      cmd_help))
 app.add_handler(CommandHandler("cancel",    cmd_cancel))
 app.add_handler(CommandHandler("status",    cmd_status))
-app.add_handler(CommandHandler("setcookie", cmd_setcookie))
 
-app.add_handler(MessageHandler(filters.Document.ALL, handle_cookie_file))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(MessageHandler(
-    filters.VIDEO | filters.AUDIO | filters.VOICE,
+    filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL,
     handle_media,
 ))
 
@@ -1003,6 +907,6 @@ app.add_handler(CallbackQueryHandler(video_audio_callback, pattern=r"^vaudio_"))
 app.add_handler(CallbackQueryHandler(shazam_callback,      pattern=r"^shazam_"))
 app.add_handler(CallbackQueryHandler(search_dl_callback,   pattern=r"^sdl_"))
 
-log.info("✅ Music Bot ishlamoqda!")
-print("✅ Bot ishlamoqda!")
+log.info("✅ Music Bot ishga tushdi. Cookie fayl mavjudligi: %s", os.path.exists(COOKIE_PATH))
+print("✅ Bot ishlamoqda! Hech qanday cookie so'ralmaydi.")
 app.run_polling(poll_interval=0.3, timeout=30, drop_pending_updates=True)
