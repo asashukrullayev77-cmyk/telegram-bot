@@ -384,35 +384,58 @@ async def search_music(update: Update, query: str):
     msg = await update.message.reply_text("🔍 Qidirilmoqda...")
     try:
         def do_search():
-            with yt_dlp.YoutubeDL({
-                "quiet": True, "no_warnings": True,
-                "skip_download": True, "socket_timeout": 20,
-                "noplaylist": True, **get_cookies_opt(),
-            }) as ydl:
-                return ydl.extract_info(f"ytsearch5:{query}", download=False)
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "extract_flat": "in_playlist",
+                "socket_timeout": 20,
+                "noplaylist": True,
+                "ignoreerrors": True,
+            }
+            ydl_opts.update(get_cookies_opt())
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(f"ytsearch8:{query}", download=False)
 
         info = await run_in_executor(do_search)
-        entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
-        if not entries:
+        if not info:
+            await msg.edit_text("❌ Hech narsa topilmadi.")
+            return
+
+        entries = info.get("entries") or []
+        valid = []
+        for e in entries:
+            if not e:
+                continue
+            vid_id = e.get("id")
+            if not vid_id:
+                continue
+            title = (e.get("title") or "Nomsiz").strip()
+            dur = int(e.get("duration") or 0)
+            valid.append({"id": vid_id, "title": title, "dur": dur})
+
+        if not valid:
             await msg.edit_text("❌ Hech narsa topilmadi. Boshqacha yozing.")
             return
 
         kb = []
-        for e in entries[:5]:
-            title = (e.get("title") or "Nomsiz")[:45]
-            dur = int(e.get("duration") or 0)
+        for e in valid[:5]:
+            t = e["title"][:45]
+            d = e["dur"]
+            dur_str = f"{d//60}:{d%60:02d}" if d else "--:--"
             kb.append([InlineKeyboardButton(
-                f"🎵 {title}  {dur//60}:{dur%60:02d}",
+                f"🎵 {t}  {dur_str}",
                 callback_data=f"dl_{e['id']}"
             )])
+
         await msg.edit_text(
             f"🎵 *Natijalar:* {query}",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown",
         )
     except Exception as e:
-        log.error(f"search_music: {e}")
-        await msg.edit_text("❌ Qidirishda xato. Qayta urinib ko'ring.")
+        log.error(f"search_music xato: {e}")
+        await msg.edit_text("❌ Qidirishda xato yuz berdi. Qayta urinib ko'ring.")
 
 # ══════════════════════════════════════════════════════
 # KATALOGDAN AUDIO YUKLASH
