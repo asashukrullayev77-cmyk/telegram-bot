@@ -314,7 +314,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎶 *Music Bot* ga xush kelibsiz!\n\n"
         "📌 *Imkoniyatlar:*\n"
         "🔍 Qo'shiq nomi yozing → qidirish → yuklab olish\n"
-        "🔗 Havola yuboring → video yuklanadi\n"
+        "🔗 YouTube/Instagram havola → video yuklanadi\n"
         "🎵 Video kelgach → *Faqat audio* tugmasi\n"
         "🎧 Video kelgach → *Qo'shiqni top* (Shazam)\n"
         "📤 Video/audio fayl yuboring → qo'shiq topiladi\n\n"
@@ -375,7 +375,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 count += 1
     except: pass
 
-    # Faqat adminlarga ID ko'rsatish
     id_line = f"\n👤 Sizning ID: `{uid}`" if uid in ADMIN_IDS else ""
 
     await update.message.reply_text(
@@ -390,7 +389,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ══════════════════════════════════════════════════════
-# COOKIE YANGILASH BUYRUQLARI
+# COOKIE YANGILASH
 # ══════════════════════════════════════════════════════
 
 async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -407,9 +406,7 @@ async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "1️⃣ *Matn sifatida:*\n"
             "`/setcookie [cookies.txt mazmuni]`\n\n"
             "2️⃣ *Fayl sifatida:*\n"
-            "cookies.txt faylni to'g'ridan-to'g'ri yuboring\n\n"
-            "🔗 Cookie olish: chrome.google.com/webstore\n"
-            "→ 'Get cookies.txt LOCALLY' extensioni",
+            "cookies.txt faylni to'g'ridan-to'g'ri yuboring",
             parse_mode="Markdown"
         )
         return
@@ -419,9 +416,7 @@ async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(COOKIES_FILE, "w", encoding="utf-8") as f:
             f.write(cookie_text)
         await update.message.reply_text(
-            f"✅ Cookie yangilandi!\n"
-            f"Hajm: {len(cookie_text)} belgi\n"
-            "Bot endi YouTube dan yuklay oladi."
+            f"✅ Cookie yangilandi!\nHajm: {len(cookie_text)} belgi"
         )
         log.info(f"Cookie yangilandi (uid={uid})")
     except Exception as e:
@@ -440,9 +435,7 @@ async def handle_cookie_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await tg_file.download_to_drive(COOKIES_FILE)
             size = os.path.getsize(COOKIES_FILE)
             await msg.edit_text(
-                f"✅ Cookie fayl yangilandi!\n"
-                f"Hajm: {human_size(size)}\n"
-                "Bot endi YouTube dan yuklay oladi."
+                f"✅ Cookie fayl yangilandi!\nHajm: {human_size(size)}"
             )
             log.info(f"Cookie fayl yangilandi (uid={uid})")
         except Exception as e:
@@ -453,24 +446,13 @@ async def handle_cookie_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def check_cookie_expiry(context: ContextTypes.DEFAULT_TYPE):
     if not os.path.exists(COOKIES_FILE):
-        await notify_admin(context,
-            "⚠️ Cookie fayl yo'q!\n"
-            "Bot YouTube dan yuklay olmaydi.\n\n"
-            "cookies.txt faylni botga yuboring yoki /setcookie buyrug'ini ishlating."
-        )
+        await notify_admin(context, "⚠️ Cookie fayl yo'q! Bot YouTube dan yuklay olmaydi.")
         return
-
     age_days = (time.time() - os.path.getmtime(COOKIES_FILE)) / 86400
     if age_days > 40:
-        await notify_admin(context,
-            f"🚨 Cookie {age_days:.0f} kun oldin yangilangan — ESKIRGAN!\n"
-            "Bot ishlamayapti. Darhol yangilang."
-        )
+        await notify_admin(context, f"🚨 Cookie {age_days:.0f} kun oldin yangilangan — ESKIRGAN!")
     elif age_days > 25:
-        await notify_admin(context,
-            f"⚠️ Cookie {age_days:.0f} kun oldin yangilangan.\n"
-            "Tez orada eskirishi mumkin."
-        )
+        await notify_admin(context, f"⚠️ Cookie {age_days:.0f} kun oldin yangilangan. Tez orada yangilang.")
 
 # ══════════════════════════════════════════════════════
 # MUSIQA QIDIRISH
@@ -530,10 +512,10 @@ async def search_music(update: Update, query: str):
         )
     except Exception as e:
         log.error(f"search_music xato: {e}")
-        await msg.edit_text("❌ Qidirishda xato yuz berdi. Qayta urinib ko'ring.")
+        await msg.edit_text("❌ Qidirishda xato yuz berdi.")
 
 # ══════════════════════════════════════════════════════
-# KATALOGDAN AUDIO YUKLASH
+# YOUTUBE AUDIO YUKLASH (catalog orqali)
 # ══════════════════════════════════════════════════════
 
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -552,17 +534,27 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             def do_dl():
                 with yt_dlp.YoutubeDL({
-                    "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+                    # Eng moslashuvchan format — istalgan sifatda audio oladi
+                    "format": "bestaudio/best",
                     "outtmpl": f"{DOWNLOAD_DIR}/{video_id}.%(ext)s",
-                    "quiet": True, "no_warnings": True,
+                    "quiet": True,
+                    "no_warnings": True,
                     "socket_timeout": 60,
                     "concurrent_fragment_downloads": 4,
                     "progress_hooks": [make_progress_hook(msg, loop)],
+                    # MP3 ga avtomatik konvert
+                    "postprocessors": [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }],
                     **get_cookies_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
 
             info = await run_in_executor(do_dl)
+
+            # MP3 ga konvert bo'lgani uchun .mp3 qidirish
             filename = find_file(DOWNLOAD_DIR, video_id)
             if not filename:
                 await msg.edit_text("❌ Fayl yuklanmadi!")
@@ -593,7 +585,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "Sign in" in err or "confirm" in err.lower() or "bot" in err.lower():
             await safe_edit(msg,
                 "❌ YouTube cookie talab qilmoqda.\n"
-                "cookies.txt faylni botga yuboring yoki /setcookie ishlating."
+                "cookies.txt faylni botga yuboring."
             )
             await notify_admin(context, "⚠️ Cookie eskirgan! Yangilang.")
         else:
@@ -603,25 +595,31 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # HAVOLA ORQALI VIDEO YUKLASH
 # ══════════════════════════════════════════════════════
 
-PLATFORM_FMT = {
-    "YouTube":   "best[ext=mp4][filesize<50M]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
-    "Instagram": "best[ext=mp4]/best",
-    "TikTok":    "best[ext=mp4]/best",
-    "Twitter/X": "best[ext=mp4]/best",
-    "Facebook":  "best[ext=mp4][filesize<50M]/best",
-    "VK":        "best[ext=mp4]/best",
-    "SoundCloud":"bestaudio/best",
-}
 MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
 )
+
+def get_video_format(platform: str) -> str:
+    """Har bir platforma uchun eng ishonchli format"""
+    if platform == "YouTube":
+        # Avval mp4 sinab ko'r, bo'lmasa istalgan formatni ol
+        return "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
+    elif platform in ("Instagram", "TikTok", "Twitter/X", "VK"):
+        return "best[ext=mp4]/best"
+    elif platform == "Facebook":
+        return "best[ext=mp4][filesize<50M]/best"
+    elif platform == "SoundCloud":
+        return "bestaudio/best"
+    else:
+        return "best[ext=mp4]/best"
 
 async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                          url: str, audio_only: bool = False):
     uid = update.effective_user.id
     platform = detect_platform(url)
     ts = int(time.time())
+    msg = None
 
     try:
         with UserTask(uid):
@@ -634,14 +632,21 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
             headers = {"User-Agent": MOBILE_UA, "Accept-Language": "en-US,en;q=0.9"}
 
+            # ── FAQAT AUDIO ──
             if audio_only:
                 def do_audio():
                     with yt_dlp.YoutubeDL({
-                        "format": "bestaudio[ext=m4a]/bestaudio/best",
+                        "format": "bestaudio/best",
                         "outtmpl": f"{DOWNLOAD_DIR}/audio_{ts}.%(ext)s",
                         "quiet": True, "no_warnings": True, "socket_timeout": 60,
                         "progress_hooks": [make_progress_hook(msg, loop)],
-                        "http_headers": headers, **get_cookies_opt(),
+                        "http_headers": headers,
+                        "postprocessors": [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192",
+                        }],
+                        **get_cookies_opt(),
                     }) as ydl:
                         return ydl.extract_info(url, download=True)
 
@@ -660,7 +665,8 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 except: pass
                 return
 
-            fmt = PLATFORM_FMT.get(platform, "best[ext=mp4][filesize<50M]/best")
+            # ── VIDEO ──
+            fmt = get_video_format(platform)
 
             def do_video():
                 with yt_dlp.YoutubeDL({
@@ -670,14 +676,45 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "concurrent_fragment_downloads": 4,
                     "merge_output_format": "mp4",
                     "progress_hooks": [make_progress_hook(msg, loop)],
-                    "http_headers": headers, **get_cookies_opt(),
+                    "http_headers": headers,
+                    **get_cookies_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
 
             info = await run_in_executor(do_video)
             filename = find_file(DOWNLOAD_DIR, f"video_{ts}")
+
             if not filename:
-                await msg.edit_text("❌ Fayl yuklanmadi!")
+                # Video yuklanmadi — audio sifatida sinab ko'r
+                await msg.edit_text("⚠️ Video yuklanmadi, audio sifatida urinib ko'rilmoqda...")
+                def do_audio_fallback():
+                    with yt_dlp.YoutubeDL({
+                        "format": "bestaudio/best",
+                        "outtmpl": f"{DOWNLOAD_DIR}/audio_{ts}.%(ext)s",
+                        "quiet": True, "no_warnings": True, "socket_timeout": 60,
+                        "postprocessors": [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192",
+                        }],
+                        "http_headers": headers,
+                        **get_cookies_opt(),
+                    }) as ydl:
+                        return ydl.extract_info(url, download=True)
+
+                info = await run_in_executor(do_audio_fallback)
+                filename = find_file(DOWNLOAD_DIR, f"audio_{ts}")
+                if not filename:
+                    await msg.edit_text("❌ Fayl yuklanmadi!")
+                    return
+                await msg.delete()
+                with open(filename, "rb") as f:
+                    await update.message.reply_audio(
+                        f, title=info.get("title", "Audio"),
+                        performer=info.get("uploader", "")
+                    )
+                try: os.remove(filename)
+                except: pass
                 return
 
             fsize = os.path.getsize(filename)
@@ -691,6 +728,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 "saved_at": time.time(),
             }
 
+            # Tugmalar: audio ajratish + Shazam
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🎵 Faqat audio",   callback_data=f"vaudio_{vid_key}"),
                 InlineKeyboardButton("🔍 Qo'shiqni top", callback_data=f"shazam_{vid_key}"),
@@ -727,17 +765,22 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
     except Exception as e:
         err = str(e)
         log.error(f"download_video uid={uid}: {err}")
+        txt = "❌ Xato yuz berdi."
         if "private" in err.lower() or "login" in err.lower():
-            await safe_edit(msg, "❌ Bu post shaxsiy. Ochiq havola yuboring!")
+            txt = "❌ Bu post shaxsiy. Ochiq havola yuboring!"
         elif "Unsupported URL" in err:
-            await safe_edit(msg, f"❌ [{platform}] qo'llab-quvvatlanmaydi.")
+            txt = f"❌ [{platform}] qo'llab-quvvatlanmaydi."
         elif "Sign in" in err or "confirm" in err.lower():
-            await safe_edit(msg, "❌ Cookie talab qilmoqda.\ncookies.txt faylni botga yuboring.")
+            txt = "❌ Cookie talab qilmoqda.\ncookies.txt faylni botga yuboring."
             await notify_admin(context, "⚠️ Cookie eskirgan! Yangilang.")
         elif "geo" in err.lower():
-            await safe_edit(msg, "❌ Bu video sizning hududingizda mavjud emas.")
+            txt = "❌ Bu video sizning hududingizda mavjud emas."
+        elif "format" in err.lower() or "not available" in err.lower():
+            txt = "❌ Bu video uchun mos format topilmadi."
+        if msg:
+            await safe_edit(msg, txt)
         else:
-            await safe_edit(msg, f"❌ Xato: {err[:200]}")
+            await update.message.reply_text(txt)
 
 # ══════════════════════════════════════════════════════
 # VIDEO → FAQAT AUDIO
@@ -762,7 +805,7 @@ async def video_audio_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             audio_out = os.path.join(DOWNLOAD_DIR, f"vaudio_{ts}.mp3")
 
             if not await extract_audio(filename, audio_out):
-                await msg.edit_text("❌ Audio ajratib bo'lmadi. ffmpeg tekshiring.")
+                await msg.edit_text("❌ Audio ajratib bo'lmadi.")
                 return
 
             await msg.delete()
