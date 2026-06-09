@@ -17,7 +17,7 @@ from telegram.ext import (
 # ══════════════════════════════════════════════════════
 
 TOKEN        = "8802164056:AAHUzN18Lr5a8S3lhKmuIJ4Ix0OP4X5_Jo4"
-COOKIES_FILE = os.environ.get("COOKIES_FILE", "/root/cookies.txt")
+COOKIES_FILE = os.environ.get("COOKIES_FILE", "/tmp/cookies.txt")
 ADMIN_IDS    = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
 DOWNLOAD_DIR = "downloads"
 MAX_PARALLEL = 2
@@ -39,20 +39,23 @@ _user_tasks: dict[int, int] = defaultdict(int)
 _ytdlp_last_update: float = 0
 
 # ══════════════════════════════════════════════════════
-# YOUTUBE BOT BLOKIDAN QOCHISH UCHUN BAZAVIY SOZLAMALAR
+# COOKIE SETUP — env variable dan avtomatik yozish
 # ══════════════════════════════════════════════════════
 
-# Barcha yt-dlp so'rovlarda ishlatiladi
-YDL_BASE = {
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["ios", "web"],
-        }
-    },
-}
+def _setup_cookies():
+    cookie_data = os.environ.get("COOKIES_DATA", "").strip()
+    if cookie_data:
+        try:
+            with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+                f.write(cookie_data)
+            log.info(f"Cookie yozildi: {COOKIES_FILE}")
+        except Exception as e:
+            log.error(f"Cookie yozish xato: {e}")
+
+_setup_cookies()
 
 # ══════════════════════════════════════════════════════
-# FFMPEG YO'LI — bir marta aniqlanadi
+# FFMPEG
 # ══════════════════════════════════════════════════════
 
 def _find_ffmpeg() -> str:
@@ -194,7 +197,6 @@ class UserTask:
 # ══════════════════════════════════════════════════════
 
 async def extract_audio(video_path: str, out_path: str, duration: int = None) -> bool:
-    """Videodan audio ajratib olish"""
     cmd = [FFMPEG, "-i", video_path]
     if duration:
         cmd += ["-t", str(duration)]
@@ -213,7 +215,6 @@ async def extract_audio(video_path: str, out_path: str, duration: int = None) ->
         return False
 
 async def split_and_send_audio(message, audio_path: str, title: str, performer: str, markup=None):
-    """50MB dan katta audioni bo'lib yuborish"""
     fsize = os.path.getsize(audio_path)
     if fsize <= MAX_FILE_MB * 1024 * 1024:
         with open(audio_path, "rb") as f:
@@ -226,7 +227,6 @@ async def split_and_send_audio(message, audio_path: str, title: str, performer: 
     base = audio_path.rsplit(".", 1)[0]
     offset, idx = 0, 0
     parts = []
-
     while True:
         part = f"{base}_part{idx}.mp3"
         cmd = [FFMPEG, "-i", audio_path, "-ss", str(offset), "-t", "3600",
@@ -259,7 +259,6 @@ async def split_and_send_audio(message, audio_path: str, title: str, performer: 
             try: os.remove(part)
             except: pass
         await asyncio.sleep(0.5)
-
     try: os.remove(audio_path)
     except: pass
 
@@ -281,7 +280,7 @@ async def recognize_song(audio_path: str) -> dict | None:
             "cover":  track.get("images", {}).get("coverart", ""),
         }
     except ImportError:
-        log.error("shazamio o'rnatilmagan! pip install shazamio")
+        log.error("shazamio o'rnatilmagan!")
         return None
     except Exception as e:
         log.error(f"Shazam xato: {e}")
@@ -310,6 +309,7 @@ async def send_shazam_result(msg, reply_to, result: dict):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Do'st"
+    uid = update.effective_user.id
     await update.message.reply_text(
         f"Salom, {name}! 👋\n\n"
         "🎶 *Music Bot* ga xush kelibsiz!\n\n"
@@ -320,7 +320,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎧 Video kelgach → *Qo'shiqni top* (Shazam)\n"
         "📤 Video/audio fayl yuboring → qo'shiq topiladi\n\n"
         "/help — batafsil\n"
-        "/status — bot holati",
+        "/status — bot holati\n\n"
+        f"🆔 Sizning ID: `{uid}`",
         parse_mode="Markdown",
     )
 
@@ -329,7 +330,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Yordam*\n\n"
         "*Qo'shiq qidirish:*\n"
         "Qo'shiq yoki artist nomini yozing\n\n"
-        "*Havola orqali video:*\n"
+        "*Havola orqali:*\n"
         "YouTube / Instagram / TikTok / Twitter havolasini yuboring\n"
         "Faqat audio: `havola audio` deb yozing\n\n"
         "*Fayl yuborish:*\n"
@@ -352,24 +353,20 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ Hozir faol yuklanish yo'q.")
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # shazamio tekshirish
     try:
         import shazamio
         shazam_st = f"✅ {shazamio.__version__}"
     except ImportError:
-        shazam_st = "❌ O'rnatilmagan (pip install shazamio)"
+        shazam_st = "❌ O'rnatilmagan"
 
-    # ffmpeg tekshirish
-    ffmpeg_st = f"✅ {FFMPEG}" if os.path.isfile(FFMPEG) or shutil.which("ffmpeg") else "❌ Topilmadi"
+    ffmpeg_st = f"✅ {FFMPEG}" if shutil.which("ffmpeg") else "❌ Topilmadi"
 
-    # cookie
     if os.path.exists(COOKIES_FILE):
         age_h = (time.time() - os.path.getmtime(COOKIES_FILE)) / 3600
-        cookie_st = f"✅ Bor ({age_h:.0f} soat oldin)" + (" ⚠️ Eski!" if age_h > 168 else "")
+        cookie_st = f"✅ Bor ({age_h:.0f} soat oldin)" + (" ⚠️ Eski!" if age_h > 720 else "")
     else:
-        cookie_st = "❌ Yo'q"
+        cookie_st = "❌ Yo'q — /setcookie bilan yuboring"
 
-    # fayllar
     total, count = 0, 0
     try:
         for f in os.listdir(DOWNLOAD_DIR):
@@ -385,9 +382,107 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Shazam: {shazam_st}\n"
         f"• Cookie: {cookie_st}\n"
         f"• Faol yuklanishlar: {sum(_user_tasks.values())}\n"
-        f"• Vaqtinchalik fayllar: {count} ta ({human_size(total)})",
+        f"• Vaqtinchalik fayllar: {count} ta ({human_size(total)})\n\n"
+        f"👤 Sizning ID: `{update.effective_user.id}`\n"
+        f"🔑 Admin IDlar: `{ADMIN_IDS if ADMIN_IDS else 'Belgilanmagan'}`",
         parse_mode="Markdown",
     )
+
+# ══════════════════════════════════════════════════════
+# COOKIE YANGILASH BUYRUQLARI
+# ══════════════════════════════════════════════════════
+
+async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if ADMIN_IDS and uid not in ADMIN_IDS:
+        await update.message.reply_text(
+            "❌ Faqat admin uchun.\n"
+            f"Sizning ID: `{uid}`\n"
+            "Railway → Variables → ADMIN_IDS ga ID qo'shing.",
+            parse_mode="Markdown"
+        )
+        return
+
+    text = update.message.text.strip()
+    parts = text.split(None, 1)
+    if len(parts) < 2:
+        await update.message.reply_text(
+            "📋 *Cookie yuborish usullari:*\n\n"
+            "1️⃣ *Matn sifatida:*\n"
+            "`/setcookie [cookies.txt mazmuni]`\n\n"
+            "2️⃣ *Fayl sifatida:*\n"
+            "cookies.txt faylni to'g'ridan-to'g'ri yuboring\n\n"
+            "🔗 Cookie olish: chrome.google.com/webstore\n"
+            "→ 'Get cookies.txt LOCALLY' extensioni",
+            parse_mode="Markdown"
+        )
+        return
+
+    cookie_text = parts[1].strip()
+    try:
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            f.write(cookie_text)
+        await update.message.reply_text(
+            f"✅ Cookie yangilandi!\n"
+            f"Hajm: {len(cookie_text)} belgi\n"
+            "Bot endi YouTube dan yuklay oladi."
+        )
+        log.info(f"Cookie yangilandi (uid={uid})")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Xato: {e}")
+
+
+async def handle_cookie_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """cookies.txt fayli yuborilsa avtomatik saqlaydi"""
+    uid = update.effective_user.id
+    if ADMIN_IDS and uid not in ADMIN_IDS:
+        return
+
+    doc = update.message.document
+    fname = doc.file_name or ""
+    if not fname.endswith(".txt"):
+        await handle_media(update, context)
+        return
+
+    msg = await update.message.reply_text("⏳ Cookie yuklanmoqda...")
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        await tg_file.download_to_drive(COOKIES_FILE)
+        size = os.path.getsize(COOKIES_FILE)
+        await msg.edit_text(
+            f"✅ Cookie fayl yangilandi!\n"
+            f"Hajm: {human_size(size)}\n"
+            "Bot endi YouTube dan yuklay oladi."
+        )
+        log.info(f"Cookie fayl yangilandi (uid={uid})")
+    except Exception as e:
+        await msg.edit_text(f"❌ Xato: {e}")
+
+
+async def check_cookie_expiry(context: ContextTypes.DEFAULT_TYPE):
+    """Har kuni cookie eskirganini tekshiradi"""
+    if not os.path.exists(COOKIES_FILE):
+        await notify_admin(context,
+            "⚠️ Cookie fayl yo'q!\n"
+            "Bot YouTube dan yuklay olmaydi.\n\n"
+            "cookies.txt faylni botga yuboring yoki /setcookie buyrug'ini ishlating."
+        )
+        return
+
+    age_days = (time.time() - os.path.getmtime(COOKIES_FILE)) / 86400
+    if age_days > 40:
+        await notify_admin(context,
+            f"🚨 Cookie {age_days:.0f} kun oldin yangilangan — ESKIRGAN!\n"
+            "Bot ishlamayapti. Darhol yangilang:\n\n"
+            "1. YouTube ga kiring\n"
+            "2. 'Get cookies.txt LOCALLY' extension → Export\n"
+            "3. Faylni botga yuboring"
+        )
+    elif age_days > 25:
+        await notify_admin(context,
+            f"⚠️ Cookie {age_days:.0f} kun oldin yangilangan.\n"
+            "Tez orada eskirishi mumkin. Yangilashni o'ylab ko'ring."
+        )
 
 # ══════════════════════════════════════════════════════
 # MUSIQA QIDIRISH
@@ -397,7 +492,7 @@ async def search_music(update: Update, query: str):
     msg = await update.message.reply_text("🔍 Qidirilmoqda...")
     try:
         def do_search():
-            ydl_opts = {
+            with yt_dlp.YoutubeDL({
                 "quiet": True,
                 "no_warnings": True,
                 "skip_download": True,
@@ -405,11 +500,8 @@ async def search_music(update: Update, query: str):
                 "socket_timeout": 20,
                 "noplaylist": True,
                 "ignoreerrors": True,
-                "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-            }
-            ydl_opts.update(YDL_BASE)
-            ydl_opts.update(get_cookies_opt())
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                **get_cookies_opt(),
+            }) as ydl:
                 return ydl.extract_info(f"ytsearch8:{query}", download=False)
 
         info = await run_in_executor(do_search)
@@ -420,14 +512,14 @@ async def search_music(update: Update, query: str):
         entries = info.get("entries") or []
         valid = []
         for e in entries:
-            if not e:
-                continue
+            if not e: continue
             vid_id = e.get("id")
-            if not vid_id:
-                continue
-            title = (e.get("title") or "Nomsiz").strip()
-            dur = int(e.get("duration") or 0)
-            valid.append({"id": vid_id, "title": title, "dur": dur})
+            if not vid_id: continue
+            valid.append({
+                "id":    vid_id,
+                "title": (e.get("title") or "Nomsiz").strip(),
+                "dur":   int(e.get("duration") or 0),
+            })
 
         if not valid:
             await msg.edit_text("❌ Hech narsa topilmadi. Boshqacha yozing.")
@@ -460,7 +552,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    video_id = q.data[3:]  # "dl_" ni olib tashlash
+    video_id = q.data[3:]
     url = f"https://www.youtube.com/watch?v={video_id}"
 
     try:
@@ -478,7 +570,6 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "socket_timeout": 60,
                     "concurrent_fragment_downloads": 4,
                     "progress_hooks": [make_progress_hook(msg, loop)],
-                    "extractor_args": {"youtube": {"player_client": ["ios"]}},
                     **get_cookies_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
@@ -509,11 +600,14 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except TaskLimitExceeded:
         await q.answer(f"⏳ Max {MAX_PARALLEL} ta parallel yuklash. Kuting.", show_alert=True)
     except Exception as e:
-        log.error(f"download_callback: {e}")
         err = str(e)
-        if "Sign in" in err or "confirm" in err.lower():
-            await safe_edit(msg, "❌ YouTube bot ekanligimizni aniqladi.\n"
-                                 "Muammo yt-dlp versiyasida. Qayta urinib ko'ring.")
+        log.error(f"download_callback: {err}")
+        if "Sign in" in err or "confirm" in err.lower() or "bot" in err.lower():
+            await safe_edit(msg,
+                "❌ YouTube cookie talab qilmoqda.\n"
+                "cookies.txt faylni botga yuboring yoki /setcookie ishlating."
+            )
+            await notify_admin(context, "⚠️ Cookie eskirgan! Yangilang.")
         else:
             await safe_edit(msg, f"❌ Xato: {err[:200]}")
 
@@ -552,7 +646,6 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
             headers = {"User-Agent": MOBILE_UA, "Accept-Language": "en-US,en;q=0.9"}
 
-            # ── Audio rejimi ──
             if audio_only:
                 def do_audio():
                     with yt_dlp.YoutubeDL({
@@ -560,7 +653,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         "outtmpl": f"{DOWNLOAD_DIR}/audio_{ts}.%(ext)s",
                         "quiet": True, "no_warnings": True, "socket_timeout": 60,
                         "progress_hooks": [make_progress_hook(msg, loop)],
-                        "http_headers": headers, **YDL_BASE, **get_cookies_opt(),
+                        "http_headers": headers, **get_cookies_opt(),
                     }) as ydl:
                         return ydl.extract_info(url, download=True)
 
@@ -579,7 +672,6 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 except: pass
                 return
 
-            # ── Video rejimi ──
             fmt = PLATFORM_FMT.get(platform, "best[ext=mp4][filesize<50M]/best")
 
             def do_video():
@@ -590,7 +682,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "concurrent_fragment_downloads": 4,
                     "merge_output_format": "mp4",
                     "progress_hooks": [make_progress_hook(msg, loop)],
-                    "http_headers": headers, **YDL_BASE, **get_cookies_opt(),
+                    "http_headers": headers, **get_cookies_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
 
@@ -604,7 +696,6 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
             title = info.get("title", "Video")
             vid_key = f"vid_{ts}"
 
-            # Keyingi amallar uchun saqlab qo'yamiz
             context.bot_data[f"vfile_{vid_key}"] = filename
             context.bot_data[f"vinfo_{vid_key}"] = {
                 "title": title,
@@ -620,16 +711,13 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await msg.delete()
 
             if fsize > MAX_FILE_MB * 1024 * 1024:
-                # Video juda katta — audio sifatida yuboramiz
                 await update.message.reply_text(
                     f"⚠️ Video katta ({human_size(fsize)}). Audio sifatida yuborilmoqda..."
                 )
                 audio_out = os.path.join(DOWNLOAD_DIR, f"big_{ts}.mp3")
                 if await extract_audio(filename, audio_out):
-                    await split_and_send_audio(
-                        update.message, audio_out, title,
-                        info.get("uploader", ""), markup=kb
-                    )
+                    await split_and_send_audio(update.message, audio_out, title,
+                                               info.get("uploader", ""), markup=kb)
                 else:
                     await update.message.reply_text("❌ Audio ajratib bo'lmadi.")
                 try: os.remove(filename)
@@ -652,16 +740,16 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
         err = str(e)
         log.error(f"download_video uid={uid}: {err}")
         if "private" in err.lower() or "login" in err.lower():
-            await safe_edit(msg, "❌ Bu post shaxsiy (private). Ochiq havola yuboring!")
+            await safe_edit(msg, "❌ Bu post shaxsiy. Ochiq havola yuboring!")
         elif "Unsupported URL" in err:
             await safe_edit(msg, f"❌ [{platform}] qo'llab-quvvatlanmaydi.")
+        elif "Sign in" in err or "confirm" in err.lower():
+            await safe_edit(msg, "❌ Cookie talab qilmoqda.\ncookies.txt faylni botga yuboring.")
+            await notify_admin(context, "⚠️ Cookie eskirgan! Yangilang.")
         elif "geo" in err.lower():
             await safe_edit(msg, "❌ Bu video sizning hududingizda mavjud emas.")
-        elif "copyright" in err.lower():
-            await safe_edit(msg, "❌ Mualliflik huquqi tufayli bloklanган.")
         else:
             await safe_edit(msg, f"❌ Xato: {err[:200]}")
-        await notify_admin(context, f"download_video xato (uid={uid}): {err[:300]}")
 
 # ══════════════════════════════════════════════════════
 # VIDEO → FAQAT AUDIO
@@ -671,14 +759,13 @@ async def video_audio_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    vid_key = q.data[7:]  # "vaudio_" ni olib tashlash
+    vid_key = q.data[7:]
     filename = context.bot_data.get(f"vfile_{vid_key}")
     info = context.bot_data.get(f"vinfo_{vid_key}", {})
 
     if not filename or not os.path.exists(filename):
         await q.message.reply_text(
-            "❌ Video fayli topilmadi.\n"
-            "Bot qayta ishga tushgan bo'lishi mumkin. Havolani qayta yuboring."
+            "❌ Video fayli topilmadi.\nHavolani qayta yuboring."
         )
         return
 
@@ -689,19 +776,13 @@ async def video_audio_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             audio_out = os.path.join(DOWNLOAD_DIR, f"vaudio_{ts}.mp3")
 
             if not await extract_audio(filename, audio_out):
-                await msg.edit_text(
-                    "❌ Audio ajratib bo'lmadi.\n"
-                    f"FFmpeg yo'li: {FFMPEG}\n"
-                    "Serverni tekshiring: apt install ffmpeg"
-                )
+                await msg.edit_text("❌ Audio ajratib bo'lmadi. ffmpeg tekshiring.")
                 return
 
             await msg.delete()
-            await split_and_send_audio(
-                q.message, audio_out,
-                info.get("title", "Audio"),
-                info.get("uploader", ""),
-            )
+            await split_and_send_audio(q.message, audio_out,
+                                       info.get("title", "Audio"),
+                                       info.get("uploader", ""))
     except TaskLimitExceeded:
         await q.answer(f"⏳ Max {MAX_PARALLEL} ta parallel.", show_alert=True)
     except Exception as e:
@@ -710,33 +791,25 @@ async def video_audio_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         except: pass
 
 # ══════════════════════════════════════════════════════
-# SHAZAM — VIDEO DAN QOSHIQ TOPISH
+# SHAZAM CALLBACK
 # ══════════════════════════════════════════════════════
 
 async def shazam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    vid_key = q.data[7:]  # "shazam_" ni olib tashlash
+    vid_key = q.data[7:]
     filename = context.bot_data.get(f"vfile_{vid_key}")
 
     if not filename or not os.path.exists(filename):
-        await q.message.reply_text(
-            "❌ Video fayli topilmadi.\n"
-            "Bot qayta ishga tushgan bo'lishi mumkin. Havolani qayta yuboring."
-        )
+        await q.message.reply_text("❌ Video fayli topilmadi.\nHavolani qayta yuboring.")
         return
 
     msg = await q.message.reply_text("🎧 Qo'shiq aniqlanmoqda...")
     ts = int(time.time())
     shazam_mp3 = os.path.join(DOWNLOAD_DIR, f"shazam_{ts}.mp3")
 
-    # Videoning birinchi 30 soniyasidan audio olamiz
     if not await extract_audio(filename, shazam_mp3, duration=SHAZAM_SEC):
-        await msg.edit_text(
-            "❌ Audio ajratib bo'lmadi.\n"
-            f"FFmpeg: {FFMPEG}\n"
-            "apt install ffmpeg"
-        )
+        await msg.edit_text("❌ Audio ajratib bo'lmadi.")
         return
 
     result = await recognize_song(shazam_mp3)
@@ -746,29 +819,29 @@ async def shazam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not result:
         await msg.edit_text(
             "❌ Qo'shiq tanib olinmadi.\n"
-            "Sabab: video shovqinli, instrumental yoki Shazam bazasida yo'q."
+            "Sabab: video shovqinli yoki Shazam bazasida yo'q."
         )
         return
 
     await send_shazam_result(msg, q.message, result)
 
 # ══════════════════════════════════════════════════════
-# SHAZAM TOPGAN QOSHIQNI YOUTUBE DAN YUKLAB OLISH
+# SHAZAM TOPGAN QOSHIQNI YUKLAB OLISH
 # ══════════════════════════════════════════════════════
 
 async def search_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    uid = q.from_user.id
-    search_q = q.data[4:]  # "sdl_" ni olib tashlash
+    search_q = q.data[4:]
     msg = await q.message.reply_text("🔍 Qidirilmoqda...")
 
     try:
         def do_search():
             with yt_dlp.YoutubeDL({
                 "quiet": True, "no_warnings": True,
-                "skip_download": True, "socket_timeout": 20,
-                "noplaylist": True, **YDL_BASE, **get_cookies_opt(),
+                "skip_download": True, "extract_flat": "in_playlist",
+                "socket_timeout": 20, "noplaylist": True,
+                **get_cookies_opt(),
             }) as ydl:
                 return ydl.extract_info(f"ytsearch3:{search_q}", download=False)
 
@@ -782,8 +855,9 @@ async def search_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         for e in entries[:3]:
             title = (e.get("title") or "Nomsiz")[:45]
             dur = int(e.get("duration") or 0)
+            dur_str = f"{dur//60}:{dur%60:02d}" if dur else "--:--"
             kb.append([InlineKeyboardButton(
-                f"🎵 {title}  {dur//60}:{dur%60:02d}",
+                f"🎵 {title}  {dur_str}",
                 callback_data=f"dl_{e['id']}"
             )])
         await msg.edit_text(
@@ -811,8 +885,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fsize = getattr(file, "file_size", 0) or 0
     if fsize > 20 * 1024 * 1024:
         await update.message.reply_text(
-            f"❌ Fayl juda katta ({human_size(fsize)}).\n"
-            "Telegram max 20MB fayl uzatadi."
+            f"❌ Fayl juda katta ({human_size(fsize)}). Max 20MB."
         )
         return
 
@@ -830,7 +903,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     shazam_mp3 = tmp + ".mp3"
     if not await extract_audio(tmp, shazam_mp3, duration=SHAZAM_SEC):
-        await msg.edit_text("❌ Audio ajratib bo'lmadi. FFmpeg tekshiring.")
+        await msg.edit_text("❌ Audio ajratib bo'lmadi.")
         try: os.remove(tmp)
         except: pass
         return
@@ -843,10 +916,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
 
     if not result:
-        await msg.edit_text(
-            "❌ Qo'shiq tanib olinmadi.\n"
-            "Audio sifati past yoki Shazam bazasida yo'q."
-        )
+        await msg.edit_text("❌ Qo'shiq tanib olinmadi.")
         return
 
     await send_shazam_result(msg, update.message, result)
@@ -866,68 +936,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await search_music(update, text)
 
-
-async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Qidiruvni test qilish — Railway logs da ko'rinadi"""
-    msg = await update.message.reply_text("🔍 Test qidiruv boshlandi...")
-    results = []
-
-    # Test 1: eng oddiy sozlama
-    try:
-        def t1():
-            with yt_dlp.YoutubeDL({
-                "quiet": True, "no_warnings": True,
-                "skip_download": True, "extract_flat": "in_playlist",
-                "noplaylist": True, "ignoreerrors": True,
-            }) as ydl:
-                return ydl.extract_info("ytsearch3:Dua Lipa", download=False)
-        info = await run_in_executor(t1)
-        entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
-        results.append(f"Test1 (oddiy): {len(entries)} ta natija")
-        if entries:
-            results.append(f"  1-natija: {entries[0].get('title','?')[:40]}")
-    except Exception as e:
-        results.append(f"Test1 xato: {str(e)[:100]}")
-
-    # Test 2: android client
-    try:
-        def t2():
-            with yt_dlp.YoutubeDL({
-                "quiet": True, "no_warnings": True,
-                "skip_download": True, "extract_flat": "in_playlist",
-                "noplaylist": True, "ignoreerrors": True,
-                "extractor_args": {"youtube": {"player_client": ["android"]}},
-            }) as ydl:
-                return ydl.extract_info("ytsearch3:Dua Lipa", download=False)
-        info = await run_in_executor(t2)
-        entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
-        results.append(f"Test2 (android): {len(entries)} ta natija")
-        if entries:
-            results.append(f"  1-natija: {entries[0].get('title','?')[:40]}")
-    except Exception as e:
-        results.append(f"Test2 xato: {str(e)[:100]}")
-
-    # Test 3: mweb client
-    try:
-        def t3():
-            with yt_dlp.YoutubeDL({
-                "quiet": True, "no_warnings": True,
-                "skip_download": True, "extract_flat": "in_playlist",
-                "noplaylist": True, "ignoreerrors": True,
-                "extractor_args": {"youtube": {"player_client": ["mweb"]}},
-            }) as ydl:
-                return ydl.extract_info("ytsearch3:Dua Lipa", download=False)
-        info = await run_in_executor(t3)
-        entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
-        results.append(f"Test3 (mweb): {len(entries)} ta natija")
-        if entries:
-            results.append(f"  1-natija: {entries[0].get('title','?')[:40]}")
-    except Exception as e:
-        results.append(f"Test3 xato: {str(e)[:100]}")
-
-    text = "📊 Debug natijalar:\n\n" + "\n".join(results)
-    await msg.edit_text(text)
-
 # ══════════════════════════════════════════════════════
 # ISHGA TUSHIRISH
 # ══════════════════════════════════════════════════════
@@ -936,16 +944,18 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start",  cmd_start))
-app.add_handler(CommandHandler("help",   cmd_help))
-app.add_handler(CommandHandler("cancel", cmd_cancel))
-app.add_handler(CommandHandler("status", cmd_status))
-app.add_handler(CommandHandler("debug",  cmd_debug))
+app.add_handler(CommandHandler("start",     cmd_start))
+app.add_handler(CommandHandler("help",      cmd_help))
+app.add_handler(CommandHandler("cancel",    cmd_cancel))
+app.add_handler(CommandHandler("status",    cmd_status))
+app.add_handler(CommandHandler("setcookie", cmd_setcookie))
+
+# Hujjat (fayl) handleri — cookies.txt bo'lsa admin uchun, aks holda media
+app.add_handler(MessageHandler(filters.Document.ALL, handle_cookie_file))
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(MessageHandler(
-    filters.VIDEO | filters.AUDIO | filters.VOICE |
-    filters.Document.VIDEO | filters.Document.AUDIO,
+    filters.VIDEO | filters.AUDIO | filters.VOICE,
     handle_media,
 ))
 
@@ -953,6 +963,9 @@ app.add_handler(CallbackQueryHandler(download_callback,    pattern=r"^dl_"))
 app.add_handler(CallbackQueryHandler(video_audio_callback, pattern=r"^vaudio_"))
 app.add_handler(CallbackQueryHandler(shazam_callback,      pattern=r"^shazam_"))
 app.add_handler(CallbackQueryHandler(search_dl_callback,   pattern=r"^sdl_"))
+
+# Har kuni cookie eskirganini tekshirish
+app.job_queue.run_repeating(check_cookie_expiry, interval=86400, first=3600)
 
 log.info("✅ Music Bot ishlamoqda!")
 print("✅ Bot ishlamoqda!")
