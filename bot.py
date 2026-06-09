@@ -16,7 +16,7 @@ from telegram.ext import (
 # SOZLAMALAR
 # ══════════════════════════════════════════════════════
 
-TOKEN        = "8802164056:AAHUzN18Lr5a8S3lhKmuIJ4Ix0OP4X5_Jo4"
+TOKEN        = os.environ.get("BOT_TOKEN", "8802164056:AAH5xRp6OQGPDDKBPrqrK6x1QuyUBLVH5cQ")
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "/root/cookies.txt")
 ADMIN_IDS    = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
 DOWNLOAD_DIR = "downloads"
@@ -37,6 +37,26 @@ log = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=6)
 _user_tasks: dict[int, int] = defaultdict(int)
 _ytdlp_last_update: float = 0
+
+# ══════════════════════════════════════════════════════
+# YOUTUBE BOT BLOKIDAN QOCHISH UCHUN BAZAVIY SOZLAMALAR
+# ══════════════════════════════════════════════════════
+
+# Barcha yt-dlp so'rovlarda ishlatiladi
+YDL_BASE = {
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web"],
+            "player_skip": ["webpage", "configs"],
+        }
+    },
+    "http_headers": {
+        "User-Agent": (
+            "com.google.android.youtube/17.36.4 "
+            "(Linux; U; Android 12; GB) gzip"
+        ),
+    },
+}
 
 # ══════════════════════════════════════════════════════
 # FFMPEG YO'LI — bir marta aniqlanadi
@@ -392,7 +412,9 @@ async def search_music(update: Update, query: str):
                 "socket_timeout": 20,
                 "noplaylist": True,
                 "ignoreerrors": True,
+                "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
             }
+            ydl_opts.update(YDL_BASE)
             ydl_opts.update(get_cookies_opt())
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(f"ytsearch8:{query}", download=False)
@@ -463,7 +485,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "socket_timeout": 30,
                     "concurrent_fragment_downloads": 4,
                     "progress_hooks": [make_progress_hook(msg, loop)],
-                    **get_cookies_opt(),
+                    **YDL_BASE, **get_cookies_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
 
@@ -539,7 +561,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         "outtmpl": f"{DOWNLOAD_DIR}/audio_{ts}.%(ext)s",
                         "quiet": True, "no_warnings": True, "socket_timeout": 60,
                         "progress_hooks": [make_progress_hook(msg, loop)],
-                        "http_headers": headers, **get_cookies_opt(),
+                        "http_headers": headers, **YDL_BASE, **get_cookies_opt(),
                     }) as ydl:
                         return ydl.extract_info(url, download=True)
 
@@ -569,7 +591,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "concurrent_fragment_downloads": 4,
                     "merge_output_format": "mp4",
                     "progress_hooks": [make_progress_hook(msg, loop)],
-                    "http_headers": headers, **get_cookies_opt(),
+                    "http_headers": headers, **YDL_BASE, **get_cookies_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
 
@@ -747,7 +769,7 @@ async def search_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             with yt_dlp.YoutubeDL({
                 "quiet": True, "no_warnings": True,
                 "skip_download": True, "socket_timeout": 20,
-                "noplaylist": True, **get_cookies_opt(),
+                "noplaylist": True, **YDL_BASE, **get_cookies_opt(),
             }) as ydl:
                 return ydl.extract_info(f"ytsearch3:{search_q}", download=False)
 
