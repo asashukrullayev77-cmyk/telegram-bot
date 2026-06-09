@@ -867,6 +867,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await search_music(update, text)
 
+
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Qidiruvni test qilish — Railway logs da ko'rinadi"""
+    msg = await update.message.reply_text("🔍 Test qidiruv boshlandi...")
+    results = []
+
+    # Test 1: eng oddiy sozlama
+    try:
+        def t1():
+            with yt_dlp.YoutubeDL({
+                "quiet": True, "no_warnings": True,
+                "skip_download": True, "extract_flat": "in_playlist",
+                "noplaylist": True, "ignoreerrors": True,
+            }) as ydl:
+                return ydl.extract_info("ytsearch3:Dua Lipa", download=False)
+        info = await run_in_executor(t1)
+        entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
+        results.append(f"Test1 (oddiy): {len(entries)} ta natija")
+        if entries:
+            results.append(f"  1-natija: {entries[0].get('title','?')[:40]}")
+    except Exception as e:
+        results.append(f"Test1 xato: {str(e)[:100]}")
+
+    # Test 2: android client
+    try:
+        def t2():
+            with yt_dlp.YoutubeDL({
+                "quiet": True, "no_warnings": True,
+                "skip_download": True, "extract_flat": "in_playlist",
+                "noplaylist": True, "ignoreerrors": True,
+                "extractor_args": {"youtube": {"player_client": ["android"]}},
+            }) as ydl:
+                return ydl.extract_info("ytsearch3:Dua Lipa", download=False)
+        info = await run_in_executor(t2)
+        entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
+        results.append(f"Test2 (android): {len(entries)} ta natija")
+        if entries:
+            results.append(f"  1-natija: {entries[0].get('title','?')[:40]}")
+    except Exception as e:
+        results.append(f"Test2 xato: {str(e)[:100]}")
+
+    # Test 3: mweb client
+    try:
+        def t3():
+            with yt_dlp.YoutubeDL({
+                "quiet": True, "no_warnings": True,
+                "skip_download": True, "extract_flat": "in_playlist",
+                "noplaylist": True, "ignoreerrors": True,
+                "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+            }) as ydl:
+                return ydl.extract_info("ytsearch3:Dua Lipa", download=False)
+        info = await run_in_executor(t3)
+        entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
+        results.append(f"Test3 (mweb): {len(entries)} ta natija")
+        if entries:
+            results.append(f"  1-natija: {entries[0].get('title','?')[:40]}")
+    except Exception as e:
+        results.append(f"Test3 xato: {str(e)[:100]}")
+
+    text = "📊 Debug natijalar:\n\n" + "\n".join(results)
+    await msg.edit_text(text)
+
 # ══════════════════════════════════════════════════════
 # ISHGA TUSHIRISH
 # ══════════════════════════════════════════════════════
@@ -879,6 +941,7 @@ app.add_handler(CommandHandler("start",  cmd_start))
 app.add_handler(CommandHandler("help",   cmd_help))
 app.add_handler(CommandHandler("cancel", cmd_cancel))
 app.add_handler(CommandHandler("status", cmd_status))
+app.add_handler(CommandHandler("debug",  cmd_debug))
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(MessageHandler(
