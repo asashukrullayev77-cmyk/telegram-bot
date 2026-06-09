@@ -46,15 +46,8 @@ _ytdlp_last_update: float = 0
 YDL_BASE = {
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "web"],
-            "player_skip": ["webpage", "configs"],
+            "player_client": ["ios", "web"],
         }
-    },
-    "http_headers": {
-        "User-Agent": (
-            "com.google.android.youtube/17.36.4 "
-            "(Linux; U; Android 12; GB) gzip"
-        ),
     },
 }
 
@@ -479,13 +472,14 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             def do_dl():
                 with yt_dlp.YoutubeDL({
-                    "format": "bestaudio[ext=m4a]/bestaudio/best",
+                    "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
                     "outtmpl": f"{DOWNLOAD_DIR}/{video_id}.%(ext)s",
                     "quiet": True, "no_warnings": True,
-                    "socket_timeout": 30,
+                    "socket_timeout": 60,
                     "concurrent_fragment_downloads": 4,
                     "progress_hooks": [make_progress_hook(msg, loop)],
-                    **YDL_BASE, **get_cookies_opt(),
+                    "extractor_args": {"youtube": {"player_client": ["ios"]}},
+                    **get_cookies_opt(),
                 }) as ydl:
                     return ydl.extract_info(url, download=True)
 
@@ -516,7 +510,12 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer(f"⏳ Max {MAX_PARALLEL} ta parallel yuklash. Kuting.", show_alert=True)
     except Exception as e:
         log.error(f"download_callback: {e}")
-        await safe_edit(msg, f"❌ Xato: {str(e)[:200]}")
+        err = str(e)
+        if "Sign in" in err or "confirm" in err.lower():
+            await safe_edit(msg, "❌ YouTube bot ekanligimizni aniqladi.\n"
+                                 "Muammo yt-dlp versiyasida. Qayta urinib ko'ring.")
+        else:
+            await safe_edit(msg, f"❌ Xato: {err[:200]}")
 
 # ══════════════════════════════════════════════════════
 # HAVOLA ORQALI VIDEO YUKLASH
