@@ -964,8 +964,6 @@ app.add_handler(CallbackQueryHandler(video_audio_callback, pattern=r"^vaudio_"))
 app.add_handler(CallbackQueryHandler(shazam_callback,      pattern=r"^shazam_"))
 app.add_handler(CallbackQueryHandler(search_dl_callback,   pattern=r"^sdl_"))
 
-# Har kuni cookie eskirganini tekshirish
-app.job_queue.run_repeating(check_cookie_expiry, interval=86400, first=3600)
 
 log.info("✅ Music Bot ishlamoqda!")
 print("✅ Bot ishlamoqda!")
